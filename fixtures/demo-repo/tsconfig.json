@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "baseUrl": ".",
+    "paths": {
+      "@demo/*": ["packages/*/src"]
+    },
+    "noEmit": true
+  },
+  "include": ["packages/*/src"]
+}

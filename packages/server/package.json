@@ -1,0 +1,28 @@
+{
+  "name": "@lsp-viz/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "lsp-viz": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fastify/static": "^10.1.3",
+    "@fastify/websocket": "^11.3.0",
+    "@lsp-viz/core": "workspace:*",
+    "@lsp-viz/indexer": "workspace:*",
+    "commander": "^15.0.0",
+    "fastify": "^5.12.1",
+    "fuzzysort": "^4.0.2",
+    "open": "^11.0.1"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
+  }
+}
