@@ -1,6 +1,6 @@
 # lsp-viz — product brief (source of truth)
 
-A local web app that lets a developer explore an entire codebase visually, without reading
+A desktop app that lets a developer explore an entire codebase visually, without reading
 source files linearly. Point it at a repo, it analyzes the code via the Language Server
 Protocol, and renders an interactive, infinitely-nestable graph you can drill into and back
 out of — modeled on C4 diagram theory (zoom levels with consistent abstraction per level).
@@ -50,9 +50,16 @@ Monorepo, pnpm workspaces, TypeScript throughout, strict mode.
 packages/
   core/        # graph IR types + graph store (SQLite via better-sqlite3)
   indexer/     # LSP client, crawler, tree-sitter import extraction
-  server/      # Fastify HTTP + WebSocket API serving the frontend
+  server/      # the API (api.ts) + its Fastify HTTP/WebSocket transport, CLI entry
+  desktop/     # Electron shell — the primary way to run it
   web/         # React + Vite frontend
 ```
+
+The app is desktop-first: `pnpm desktop` opens a window with no server, port, or browser
+involved. The CLI host remains for remote use (SSH, a container), and both drive the same
+`createApi()` — the API is defined once and transport-free, so neither host can drift from
+the other. The frontend picks its transport at runtime by feature-detecting the Electron
+preload bridge, so there is exactly one Vite bundle.
 
 SQLite: `nodes`, `edges`, plus an `aggregate_edges` table materialized after indexing for
 L1–L3 roll-ups, and a `meta` table with index timestamp and repo root. Symbol IDs must be

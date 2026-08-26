@@ -195,7 +195,29 @@ Implementation facts (verified on this machine):
   (not `format.ts`), re-run `diff`, assert the count is still 1, which is what fails
   if `addEdge` is used instead of `upsertEdges`.
 
+## API (`@lsp-viz/server`, `src/api.ts`)
+
+`createApi({ store, indexer, repoRoot })` → `LspVizApi`. This is where every answer is
+computed; it imports nothing about HTTP, Electron, or IPC. Two hosts call it — the
+Fastify routes below and the desktop app's worker — and **neither may hold logic**: a
+rule that lives in one transport is a rule the other one gets wrong.
+
+* One method per route, named in `core`'s `ApiRouteName` so both transports name the
+  same calls: `graph`, `nodeDetail`, `source`, `links`, `search`, `symbols`, `tree`,
+  `meta`, `startIndex`. All synchronous except `source` (reads the file at call time).
+* Failures throw `ApiRouteError(status, message)` carrying the status this document
+  specifies. The HTTP host maps it to a reply code; the IPC host puts it in the reply
+  envelope. Both surface it to the browser as the same `ApiError`.
+* `subscribe(listener)` / `publish(event)` fan index progress out; `startIndexRun(mode)`
+  runs the indexer in the background, catching sync AND async failures and publishing
+  them as `index:error` (a throwing indexer never takes the host down).
+* `nodeLinks` and `sourceLinks` live here for the reasons given in the module docstring,
+  and are the single definition of their respective questions.
+
 ## Server (`@lsp-viz/server`)
+
+The HTTP/WS transport, plus the CLI. `src/server.ts` is deliberately thin: unpack params,
+call one API method, map `ApiRouteError` to its status.
 
 * `src/cli.ts` (bin `lsp-viz`, commander): `lsp-viz <repo> [--port 4977] [--no-open]
   [--db <path>] [--reindex]`. DB default: `~/.cache/lsp-viz/<repoHash(absRepo)>.db`
@@ -295,9 +317,22 @@ React 18 + Vite 8 + zustand 5 + @xyflow/react 12 + elkjs (in a Web Worker) + shi
 the browser bundle. That means core's small VALUE exports cannot be imported:
 `src/levels.ts` re-implements them (`ROOT_NODE_ID`, `levelForViewParent`,
 `isLeafSymbolKind`, `isContainerKind`, `isDrillableKind`) — deliberate duplication, keep
-it in sync with `core/src/types.ts`. Dev proxy in vite.config: `/api` →
-`http://localhost:4977`, `/ws` → ws proxy to the same. Prod WS URL:
-`(wss|ws)://${location.host}/ws`.
+it in sync with `core/src/types.ts`.
+
+**Transport.** Nothing above `src/api/client.ts` knows which host it is running in.
+`client.ts` keeps its function signatures (`fetchGraph`, `fetchNodeDetail`, …) and
+delegates to the `Transport` chosen once in `src/api/transport.ts`:
+
+* `httpTransport` — fetch + WebSocket, for the CLI host. Route→URL mapping lives there
+  and nowhere else. Dev proxy in vite.config: `/api` → `http://localhost:4977`, `/ws` →
+  ws proxy to the same. Prod WS URL: `(wss|ws)://${location.host}/ws`.
+* `ipcTransport` — Electron, selected by feature-detecting `window.lspviz` (the preload
+  bridge). **Never** by a build flag: one Vite bundle serves both hosts, and
+  `packages/web/dist` is copied verbatim into the desktop app.
+
+`desktopPlatform()` stamps `data-desktop="<platform>"` on `<html>` in `main.tsx`; the
+only CSS keyed off it clears the macOS traffic lights and marks the breadcrumb as the
+window's drag region.
 
 Follow BRIEF.md's frontend section fully. Binding specifics:
 
@@ -439,10 +474,46 @@ Follow BRIEF.md's frontend section fully. Binding specifics:
 * Handle the empty states: store not yet indexed (structural phase running) and a view
   whose children are empty.
 
+## Desktop (`@lsp-viz/desktop`)
+
+Electron 39. One open repo = one `BrowserWindow` + one `utilityProcess`, paired for life
+by `RepoSession` (`src/session.ts`); a call arrives tagged with its WebContents, which
+maps to exactly one session, so multiple repos need no routing.
+
+* **Worker** (`src/worker.ts`) holds `GraphStore` + `Indexer` + `createApi` — the same
+  triple `cli.ts` builds, with IPC where the CLI puts Fastify. All three live together so
+  there is exactly one SQLite connection per repo. It runs out of the main process
+  because indexing would otherwise jank the window it is supposed to leave usable.
+  DB path matches the CLI's (`~/.cache/lsp-viz/<repoHash>.db`) so the two share a cache.
+* **`ELECTRON_RUN_AS_NODE=1`** is set in the worker before the indexer is created. The
+  adapter spawns `process.execPath <tsserver-cli> --stdio`, and in Electron that is the
+  app binary; the flag is what makes it re-execute as plain Node instead of booting a
+  second copy of the app. `spawn` inherits the env, so restarts are covered too.
+* **Renderer** is `sandbox: true`, `contextIsolation: true`, `nodeIntegration: false`.
+  Everything it can do is the three channels in `src/preload.cts`. A sandboxed preload is
+  CJS and has **no filesystem `require`** — it cannot import `ipc.cts` at runtime, so the
+  channel names are repeated there and pinned by type (`typeof import('./ipc.cjs')`,
+  erased before emit). Changing one file without the other fails the build.
+* **`app://bundle/index.html`**, a privileged standard scheme (`src/protocol.ts`), serves
+  `packages/web/dist` with a traversal guard, SPA fallback, and the app's CSP. Not
+  `file://` (null origin breaks the ELK module worker) and not localhost HTTP (any local
+  process could read the graph).
+* Reply envelope: `{ok: true, value}` / `{ok: false, status, error}` — errors ride back as
+  values because an Error thrown in `ipcMain.handle` reaches the renderer with its status
+  stripped and "Error invoking remote method" prepended.
+
 ## Running end to end
 
 ```
 pnpm build
+
+# desktop
+pnpm desktop -- --repo ./fixtures/demo-repo
+cd packages/desktop && npx electron scripts/smoke.mjs --repo ../../fixtures/demo-repo \
+  --out /tmp/shot.png     # boots the real main process, reports console/preload/render
+                          # failures and what the page actually rendered
+
+# CLI
 node packages/server/dist/cli.js ./fixtures/demo-repo --no-open --port 4977
 ```
 

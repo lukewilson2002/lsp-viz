@@ -5,7 +5,16 @@
  */
 
 import type { WsServerMessage } from '@lsp-viz/core';
-import { wsUrl } from './api/client';
+
+/**
+ * WebSocket URL for index progress (dev: proxied by vite; prod: same host).
+ * Only ever called under the HTTP host — the desktop app has no origin to
+ * derive one from and uses IPC instead (see `api/transport.ts`).
+ */
+function wsUrl(): string {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  return `${proto}://${location.host}/ws`;
+}
 
 const MAX_BACKOFF_MS = 15_000;
 const BASE_BACKOFF_MS = 500;

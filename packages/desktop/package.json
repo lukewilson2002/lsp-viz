@@ -1,0 +1,25 @@
+{
+  "name": "@lsp-viz/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "dependencies": {
+    "@lsp-viz/core": "workspace:*",
+    "@lsp-viz/indexer": "workspace:*",
+    "@lsp-viz/server": "workspace:*"
+  },
+  "devDependencies": {
+    "electron": "^39.2.7",
+    "electron-builder": "^26.0.12"
+  },
+  "description": "lsp-viz as a desktop app: the Electron shell, its IPC transport, and the packaging config.",
+  "author": "lsp-viz"
+}

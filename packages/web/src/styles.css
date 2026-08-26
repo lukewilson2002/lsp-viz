@@ -170,6 +170,22 @@ button {
   flex: none;
 }
 
+/* Desktop, macOS: the window is frameless (titleBarStyle: 'hiddenInset'), so
+   the traffic lights float over the top-left of the page and the breadcrumb
+   has to start clear of them. The strip doubles as the window's drag handle,
+   which is what a title bar would otherwise have been for — everything
+   clickable inside it opts back out. */
+html[data-desktop='darwin'] .breadcrumb {
+  padding-left: 82px;
+  -webkit-app-region: drag;
+}
+
+html[data-desktop] .breadcrumb button,
+html[data-desktop] .breadcrumb a,
+html[data-desktop] .breadcrumb input {
+  -webkit-app-region: no-drag;
+}
+
 .breadcrumb-back {
   display: inline-flex;
   align-items: center;

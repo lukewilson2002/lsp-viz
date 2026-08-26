@@ -14,14 +14,21 @@ the v1 adapter.
 ## Demo
 
 ```bash
-pnpm install && pnpm build && pnpm lsp-viz ./fixtures/demo-repo
+pnpm install && pnpm build && pnpm desktop
 ```
 
-That indexes the bundled fixture monorepo and opens the browser. Try it on a real repo:
+That launches the desktop app; pick a repo from the open dialog (or pass one:
+`pnpm desktop -- --repo ./fixtures/demo-repo`). It indexes and opens in a window —
+no server, no port, no browser tab.
+
+The same build also ships as a CLI that serves the UI over HTTP, which is handy over SSH:
 
 ```bash
 pnpm lsp-viz /path/to/your/repo
 ```
+
+Both share one index cache in `~/.cache/lsp-viz/`, so a repo crawled by either opens
+instantly in the other.
 
 Demo flow, 60 seconds:
 
@@ -48,7 +55,9 @@ packages/
              A. structural — tree-sitter (WASM): files, imports/exports  → L1–L3 in seconds
              B. semantic   — LSP (typescript-language-server): symbols,
                 call hierarchy, find-all-references, hover signatures    → L4/L5, streamed
-  server/    Fastify HTTP + WebSocket API, serves the built frontend, CLI entry
+  server/    the API itself (api.ts) + the Fastify HTTP/WS transport, CLI entry
+  desktop/   Electron shell: window + menus, app:// bundle, IPC transport,
+             one utility process per open repo holding store + indexer
   web/       React + React Flow canvas, ELK layered layout in a Web Worker,
              Shiki source views, zustand navigation stack
 ```
@@ -63,6 +72,11 @@ packages/
 * **Crash-safe.** If the language server dies mid-crawl, it's restarted and the crawl
   resumes from the last completed file. Symbol ids are deterministic, so re-indexing is
   idempotent.
+* **Desktop first, one implementation.** `createApi()` in `packages/server/api.ts` answers
+  every question the UI can ask and knows nothing about transports. The CLI wraps it in
+  Fastify routes; the desktop app calls the same methods over Electron IPC. The frontend
+  picks its transport by feature-detecting the preload bridge, so **one Vite bundle** runs
+  in both — there is no desktop build of the UI.
 * **Language-pluggable.** Everything language-specific (server command, extensions,
   tree-sitter grammar + queries, import resolution) lives behind a `LanguageAdapter`.
   The crawler contains zero TypeScript-specific logic.
@@ -80,7 +94,46 @@ pnpm build            # build all packages (topological)
 pnpm test             # core + indexer + server test suites (vitest)
 pnpm typecheck        # strict TS across the monorepo
 pnpm --filter @lsp-viz/web dev   # frontend dev server (proxies /api and /ws to :4977)
+
+pnpm desktop -- --repo ./fixtures/demo-repo   # run the Electron app on a repo
+pnpm desktop:pack     # unpacked .app / dir build, for local testing
+pnpm desktop:dist     # installers (dmg + zip / nsis / AppImage + deb)
 ```
+
+Two harnesses boot the real main process and assert on what it does — worth running
+after touching anything in `packages/desktop`:
+
+```bash
+cd packages/desktop
+npx electron scripts/smoke.mjs --repo ../../fixtures/demo-repo --out /tmp/shot.png
+npx electron scripts/close-test.mjs --repo ../../fixtures/demo-repo
+```
+
+`smoke.mjs` reports renderer console errors, preload failures, render-process crashes and
+what the page actually rendered, and saves a screenshot. `close-test.mjs` closes the window
+and quits, asserting neither throws in the main process — `closed` fires *after* the
+WebContents is destroyed, so teardown that touches `window.webContents` crashes the app on
+every window close.
+
+### Packaging notes
+
+* **No node-gyp.** `better-sqlite3` v13 is Node-API (`NAPI_VERSION=10`) with per-platform
+  prebuilds, and Node-API is ABI-stable across runtimes — Electron 39 ships Node 22 /
+  NAPI 10, so it loads the stock prebuild unchanged. `npmRebuild: false`.
+* **`asarUnpack` is load-bearing.** The tree-sitter grammars, `typescript-language-server`,
+  and the `.node` binary are resolved with `require.resolve` and then spawned or read off
+  disk, which needs real paths rather than virtual ones inside the archive.
+* **The language server needs no separate Node.** It is spawned as
+  `process.execPath <tsserver-cli> --stdio` with `ELECTRON_RUN_AS_NODE=1`, i.e. the app's
+  own binary re-executed as plain Node — the same trick VS Code uses.
+* **Relative `--repo` resolves against `INIT_CWD`.** `pnpm --filter` runs a package script
+  with the cwd set to that package, so `pnpm desktop -- --repo ./fixtures/demo-repo` typed
+  at the repo root would otherwise look under `packages/desktop/`. Package managers set
+  `INIT_CWD` to the invocation directory for exactly this; a packaged app has none and
+  falls back to cwd. (`npx` sets its own `INIT_CWD` — relevant only if you wrap the
+  command.)
+* Shipping to other machines additionally needs a Developer ID + notarization (macOS) and
+  a signing certificate (Windows). Neither is configured here.
 
 Docs: [docs/BRIEF.md](docs/BRIEF.md) (product spec) ·
 [docs/CONTRACTS.md](docs/CONTRACTS.md) (internal API contracts).

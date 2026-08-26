@@ -1,0 +1,59 @@
+appId: dev.lspviz.app
+productName: lsp-viz
+directories:
+  output: release
+  buildResources: build
+
+# The asar holds the compiled desktop code and the workspace packages it
+# imports. Two things must stay OUT of it: better-sqlite3's prebuilt binary
+# (dlopen needs a real path, not a virtual one) and the tree-sitter grammars
+# plus the language server (the indexer resolves them with require.resolve and
+# then spawns / instantiates them off disk).
+files:
+  - dist/**
+  - package.json
+  - '!**/*.map'
+asar: true
+
+# No node-gyp in this build. The one native dependency (better-sqlite3 v13) is
+# Node-API — `node-addon-api` 8 at NAPI_VERSION=10 — and ships prebuilt
+# binaries per platform. Node-API is ABI-stable ACROSS RUNTIMES, so the same
+# .node file plain Node loads is the one Electron loads (verified against
+# Electron 39, which ships Node 22 / NAPI 10). Rebuilding produces an identical
+# binary at the cost of a working toolchain on every build machine.
+#
+# This holds only while every native dep is Node-API. Add one that isn't (an
+# older NAN-based module) and this has to go back to true.
+npmRebuild: false
+asarUnpack:
+  - '**/*.node'
+  - '**/node_modules/better-sqlite3/**'
+  - '**/node_modules/@vscode/tree-sitter-wasm/**'
+  - '**/node_modules/typescript-language-server/**'
+  - '**/node_modules/typescript/**'
+
+# The frontend lives beside the asar rather than inside it: the renderer loads
+# it over app://, and serving real files is simpler than teasing them out of an
+# archive.
+extraResources:
+  - from: ../web/dist
+    to: web
+
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - dmg
+    - zip
+  hardenedRuntime: true
+  # The language server is spawned as a child of the app binary; without this
+  # the hardened runtime refuses to let it inherit the JIT entitlements it
+  # needs, and every crawl dies on launch.
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+win:
+  target: nsis
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Development

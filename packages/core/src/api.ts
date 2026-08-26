@@ -243,3 +243,43 @@ export interface MetaResponse {
   indexing: boolean;
   stats: { nodes: number; edges: number; files: number };
 }
+
+/**
+ * The API's method names — one per route above. Shared because two transports
+ * carry these calls: HTTP (`@lsp-viz/server`, the CLI) and Electron IPC
+ * (`@lsp-viz/desktop`). Naming them once is what keeps a route from existing
+ * on one transport and not the other.
+ */
+export type ApiRouteName =
+  | 'graph'
+  | 'nodeDetail'
+  | 'source'
+  | 'links'
+  | 'search'
+  | 'symbols'
+  | 'tree'
+  | 'meta'
+  | 'startIndex';
+
+/**
+ * The named arguments any route may take — every field optional, since the
+ * route decides which ones it reads. Deliberately flat and JSON-clonable: this
+ * crosses an Electron IPC boundary (structured clone) as well as a query
+ * string.
+ */
+export interface ApiParams {
+  /** Node id — `nodeDetail`, `source`, `links`, `symbols`. */
+  id?: string;
+  /** Parent node id for `graph`; defaults to the root node. */
+  parent?: string;
+  /** Raw search query for `search`. */
+  q?: string;
+  /** `startIndex`: force a full re-index instead of an mtime diff. */
+  full?: boolean;
+}
+
+/** One transport-independent API call. */
+export interface ApiRequest {
+  route: ApiRouteName;
+  params: ApiParams;
+}

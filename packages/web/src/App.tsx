@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { subscribeIndexEvents } from './api/client';
 import { GraphCanvas } from './canvas/GraphCanvas';
 import { Breadcrumb } from './chrome/Breadcrumb';
 import { Legend } from './chrome/Legend';
@@ -8,7 +9,6 @@ import { StatusBar } from './chrome/StatusBar';
 import { useGlobalKeys } from './keys';
 import { selectTopEntry, useAppStore } from './state/store';
 import { FunctionView } from './views/FunctionView';
-import { connectWs } from './ws';
 
 export function App() {
   const bootState = useAppStore((s) => s.bootState);
@@ -21,7 +21,10 @@ export function App() {
   }, [initialize]);
 
   // Live index progress; the store handles reconnect-driven refetches.
-  useEffect(() => connectWs((msg) => useAppStore.getState().handleWsMessage(msg)), []);
+  useEffect(
+    () => subscribeIndexEvents((msg) => useAppStore.getState().handleWsMessage(msg)),
+    [],
+  );
 
   useGlobalKeys();
 

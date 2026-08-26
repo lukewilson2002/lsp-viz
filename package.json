@@ -10,7 +10,10 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
-    "lsp-viz": "node packages/server/dist/cli.js"
+    "lsp-viz": "node packages/server/dist/cli.js",
+    "desktop": "pnpm --filter @lsp-viz/desktop start",
+    "desktop:pack": "pnpm --filter @lsp-viz/desktop pack",
+    "desktop:dist": "pnpm --filter @lsp-viz/desktop dist"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
