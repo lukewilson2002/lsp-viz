@@ -1,13 +1,18 @@
 /**
- * L5 — focused leaf-symbol view: callers column | Shiki-highlighted full
- * source with real line numbers | callees column. Every caller/callee row
- * navigates; identifiers matching known callees are clickable in the source.
+ * L5 — focused leaf-symbol view: inbound links | Shiki-highlighted full source
+ * with real line numbers | outbound links. Every row navigates; identifiers the
+ * graph can resolve are clickable in the source.
+ *
+ * The columns are "Used by" / "Uses", not "Callers" / "Callees": these lists
+ * carry every symbol-level edge kind, and this view is reached by variables and
+ * types too — a constant is REFERENCED by the function whose default parameter
+ * reads it, and calling that "Callers" describes the wrong relationship on the
+ * very node most likely to be looked at here.
  */
 
-import { useMemo } from 'react';
 import { kindGlyph } from '../canvas/glyphs';
-import type { CodeLink } from '../code/SourceView';
 import { SourceView } from '../code/SourceView';
+import { useCodeLinks } from '../code/useCodeLinks';
 import { CallLinkList } from '../chrome/CallList';
 import { selectTopEntry, useAppStore } from '../state/store';
 
@@ -21,10 +26,7 @@ export function FunctionView() {
   const loading = slot?.loading ?? true;
   const error = slot?.error ?? null;
 
-  const links = useMemo<CodeLink[]>(
-    () => detail?.outgoing.map((o) => ({ name: o.node.name, nodeId: o.node.id })) ?? [],
-    [detail],
-  );
+  const links = useCodeLinks(entry?.nodeId ?? null);
 
   if (!entry) return null;
 
@@ -44,9 +46,9 @@ export function FunctionView() {
       </pre>
       <div className="function-view-columns">
         <section className="function-view-panel">
-          <h3>Callers{detail ? ` (${detail.metrics.inCount})` : ''}</h3>
+          <h3>Used by{detail ? ` (${detail.metrics.inCount})` : ''}</h3>
           {detail ? (
-            <CallLinkList links={detail.incoming} empty="Nothing calls this symbol" />
+            <CallLinkList links={detail.incoming} empty="Nothing uses this symbol" />
           ) : (
             <div className="function-view-placeholder">
               {loading ? <span className="spinner" aria-hidden /> : '—'}
@@ -74,9 +76,9 @@ export function FunctionView() {
           )}
         </section>
         <section className="function-view-panel">
-          <h3>Callees{detail ? ` (${detail.metrics.outCount})` : ''}</h3>
+          <h3>Uses{detail ? ` (${detail.metrics.outCount})` : ''}</h3>
           {detail ? (
-            <CallLinkList links={detail.outgoing} empty="This symbol calls nothing indexed" />
+            <CallLinkList links={detail.outgoing} empty="This symbol uses nothing indexed" />
           ) : (
             <div className="function-view-placeholder">
               {loading ? <span className="spinner" aria-hidden /> : '—'}

@@ -9,7 +9,9 @@ import type {
   MetaResponse,
   NodeDetailResponse,
   SearchResponse,
+  SourceLinksResponse,
   SourceResponse,
+  SymbolsResponse,
   TreeResponse,
 } from '@lsp-viz/core';
 
@@ -53,9 +55,19 @@ export function fetchSource(id: string): Promise<SourceResponse> {
   return request<SourceResponse>(`/api/source/${encodeURIComponent(id)}`);
 }
 
+/** GET /api/links/:id — identifiers in this node's source that the graph knows. */
+export function fetchSourceLinks(id: string): Promise<SourceLinksResponse> {
+  return request<SourceLinksResponse>(`/api/links/${encodeURIComponent(id)}`);
+}
+
 /** GET /api/search?q= — fuzzy symbol search. */
 export function fetchSearch(query: string): Promise<SearchResponse> {
   return request<SearchResponse>(`/api/search?q=${encodeURIComponent(query)}`);
+}
+
+/** GET /api/symbols/:id — declarations in/under a node, grouped by file. */
+export function fetchSymbols(id: string): Promise<SymbolsResponse> {
+  return request<SymbolsResponse>(`/api/symbols/${encodeURIComponent(id)}`);
 }
 
 /** GET /api/tree — containment tree (containers + files) for the sidebar. */

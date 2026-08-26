@@ -232,6 +232,17 @@ button {
   flex: none;
 }
 
+/* The directory folder is drawn, not typed (see canvas/glyphs.tsx). Sized in
+   `em` so it tracks whatever font-size the surrounding .kind-glyph carries, and
+   nudged onto the text baseline so it lines up with the character glyphs it
+   sits beside in mixed lists (trees, link rows, breadcrumbs). */
+.kind-glyph-svg {
+  display: inline-block;
+  width: 1.05em;
+  height: 1.05em;
+  vertical-align: -0.16em;
+}
+
 /* ---------------------------------------------------------------- status bar */
 
 .statusbar {
@@ -342,36 +353,68 @@ button {
   opacity: 1;
 }
 
-/* zoom level-of-detail: labels + summaries fade out below zoom 0.5 */
+/* zoom level-of-detail — two tiers.
+   Use opacity ONLY: the card's height is fixed by React Flow from the ELK
+   size and .node-card is overflow:hidden, so collapsing rows would re-centre
+   the remaining content and desync the visual from the layout. opacity is
+   also compositor-only, so panning stays smooth. */
 
 .node-card-name,
-.node-card-sub,
+.node-card-signature,
+.node-card-path,
+.node-card-facts,
 .node-card-exports,
+.node-links,
+.node-io,
+.kind-glyph,
 .portal-name,
 .portal-path,
+.cluster-count,
 .cluster-hint {
   transition: opacity 120ms ease;
 }
 
+/* 0.2 – 0.34: secondary rows fade; the glyph and the NAME stay, because the
+   card must still answer "what is this". */
+.labels-dim .node-card-signature,
+.labels-dim .node-card-path,
+.labels-dim .node-card-facts,
+.labels-dim .node-card-exports,
+.labels-dim .node-links,
+.labels-dim .node-io,
+.labels-dim .portal-path,
+.labels-dim .cluster-hint {
+  opacity: 0;
+}
+
+/* < 0.2: kind-tinted blocks; shape and edge topology carry the meaning. */
 .labels-hidden .node-card-name,
-.labels-hidden .node-card-sub,
-.labels-hidden .node-card-exports,
 .labels-hidden .node-card-signature,
+.labels-hidden .node-card-path,
+.labels-hidden .node-card-facts,
+.labels-hidden .node-card-exports,
+.labels-hidden .node-links,
 .labels-hidden .node-io,
-.labels-hidden .io-badge,
+.labels-hidden .kind-glyph,
 .labels-hidden .portal-name,
 .labels-hidden .portal-path,
+.labels-hidden .cluster-count,
 .labels-hidden .cluster-hint {
   opacity: 0;
 }
 
-.node-card-signature,
-.node-io,
-.io-badge {
-  transition: opacity 120ms ease;
-}
-
-/* ---------------------------------------------------------------- node cards */
+/* ---------------------------------------------------------------- node cards
+ * Every dimension here is mirrored by a constant in canvas/types.ts — ELK
+ * sizes the card before it exists in the DOM, and .node-card is
+ * overflow: hidden at a height it does not control. Row sums:
+ *   path      2 + 14        = 16   (PATH_ROW)
+ *   facts     2 + 13        = 15   (FACTS_ROW)
+ *   exports   2 + 13        = 15   (EXPORTS_ROW)
+ *   links     3 + 18        = 21   (LINKS_ROW)
+ *   signature 3 + 6 + 14n          (SIG_MARGIN + box pad/border + SIG_LINE)
+ *   panel top 3 + 1 + 3     = 7    (IO_PANEL_TOP)
+ *   io label  13 + 4        = 17   (IO_SECTION_HEAD)
+ * Change one and you must change the other. */
 
 .node-card {
   position: relative;
@@ -384,7 +427,7 @@ button {
   padding: 8px 10px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
   overflow: hidden;
   transition:
     border-color 120ms ease,
@@ -400,31 +443,67 @@ button {
 
 .node-card-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   min-width: 0;
 }
 
+/* Scoped so the shared .kind-glyph rule (breadcrumb, tree, call rows) and the
+   smaller .node-io-row glyph are untouched; the explicit width is what makes
+   GLYPH_W exact. */
+.node-card-head .kind-glyph {
+  font-size: 11px;
+  line-height: 17px;
+  width: 11px;
+  flex: none;
+}
+
+/* Wraps to two lines rather than ellipsizing after a few letters — seeing the
+   whole identifier is the point of dropping the old details toggle. */
 .node-card-name {
+  flex: 1 1 auto;
+  min-width: 0;
   font-weight: 600;
   font-size: 13px;
+  line-height: 17px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.node-card-path {
+  margin-top: 2px;
+  height: 14px;
+  line-height: 14px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.node-card-sub {
+.node-card-facts {
+  margin-top: 2px;
+  height: 13px;
+  line-height: 13px;
+  font-size: 10px;
   color: var(--text-dim);
-  font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .node-card-exports {
-  color: var(--text-faint);
+  margin-top: 2px;
+  height: 13px;
+  line-height: 13px;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 10px;
+  color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -444,14 +523,15 @@ button {
 }
 
 .node-card--symbol {
-  padding: 6px 10px;
-  justify-content: center;
+  padding: 8px 10px;
+  justify-content: flex-start;
 }
 
 .node-card--symbol .node-card-name {
   font-weight: 500;
   font-family: var(--font-mono);
   font-size: 12px;
+  line-height: 17px;
 }
 
 .kind-glyph--function,
@@ -469,8 +549,13 @@ button {
   color: var(--kind-type);
 }
 
+/* Outer height must be <= NAME_LINE (17px): the head row is align-items:
+   flex-start, so a taller pill would grow the row past the reserved height and
+   clip the bottom row of the card. 10px text + 4px padding + 2px border = 16,
+   + 1px margin = 17 exactly. */
 .entry-badge {
-  margin-left: auto;
+  margin-left: 0;
+  margin-top: 1px;
   flex: none;
   font-size: 10px;
   line-height: 1;
@@ -481,72 +566,83 @@ button {
   opacity: 0.9;
 }
 
-/* one-line truncated signature on symbol cards */
+/* Signature block on symbol cards, clamped to two lines (the sidebar shows it
+   unclamped — the clamp exists only because ELK needs a bounded height). */
 .node-card-signature {
+  margin-top: 3px;
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
   font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--text-dim);
-  height: 14px;
   line-height: 14px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* -------- links row + expandable panel --------
+ * Geometry must match LINKS_ROW and the IO_ constants in canvas/types.ts. */
+
+.node-links {
+  margin-top: 3px;
+  height: 18px;
+  line-height: 18px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  text-align: left;
+}
+
+.node-links:hover {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+/* Nothing incident in this view — still clickable, since /api/node may have
+   links the view doesn't draw. */
+.node-links--quiet {
+  color: var(--text-faint);
+}
+
+.node-links--open {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.node-links-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.node-card--symbol {
-  justify-content: center;
-}
-
-.node-card--symbol.node-card--expanded {
-  justify-content: flex-start;
-}
-
-/* -------- in/out badge + expandable panel --------
- * Geometry must match IO_* constants in canvas/types.ts. */
-
-.io-badge {
+.node-links-chevron {
   margin-left: auto;
   flex: none;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1;
-  padding: 2px 6px;
-  border-radius: 999px;
-  border: 1px solid var(--card-border);
-  background: var(--card-bg-soft);
-  color: var(--text-dim);
-  white-space: nowrap;
+  transition: transform 120ms ease;
 }
 
-.io-badge:hover {
-  color: var(--text);
-  border-color: var(--text-faint);
-}
-
-.io-badge--open {
-  color: var(--accent);
-  border-color: var(--accent-border);
-  background: var(--accent-soft);
-}
-
-/* Isolated node: the toggle is still there, just quieter. */
-.io-badge--quiet {
-  color: var(--text-faint);
-  border-color: transparent;
-  background: transparent;
-}
-
-.io-badge--quiet:hover {
-  border-color: var(--card-border);
-}
-
-.entry-badge + .io-badge {
-  margin-left: 0;
+.node-links--open .node-links-chevron {
+  transform: rotate(90deg);
 }
 
 .node-io {
   margin-top: 3px;
   border-top: 1px solid var(--card-border-soft);
-  padding-top: 4px;
+  padding-top: 3px;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -626,47 +722,6 @@ button {
   line-height: 22px;
   font-size: 10.5px;
   color: var(--text-faint);
-}
-
-/* -------- extended fields inside an expanded card -------- */
-
-.node-facts {
-  padding: 3px 0 4px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 4px;
-}
-
-.node-facts-path {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--text-faint);
-  overflow-wrap: anywhere;
-  line-height: 15px;
-}
-
-.node-facts-sig {
-  margin: 3px 0 1px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  line-height: 14px;
-  color: var(--text);
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 2px 5px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-line-clamp: 4;
-  line-clamp: 4;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.node-facts-meta {
-  font-size: 10px;
-  line-height: 15px;
-  color: var(--text-dim);
 }
 
 /* invisible connection handles (layout is computed, not user-wired) */
@@ -822,6 +877,21 @@ button {
   opacity: 1;
 }
 
+/* A ghost standing for SEVERAL external symbols: a stacked-card edge says
+   "more than one" without adding a row or competing with the real cards. */
+.portal-node--group {
+  box-shadow:
+    3px 3px 0 -1px var(--bg),
+    3px 3px 0 0 var(--card-border);
+}
+
+.portal-node--group.portal-node--selected {
+  box-shadow:
+    3px 3px 0 -1px var(--bg),
+    3px 3px 0 0 var(--accent-border),
+    0 0 0 2px var(--accent-soft);
+}
+
 .portal-head {
   display: flex;
   align-items: center;
@@ -845,8 +915,6 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  direction: rtl;
-  text-align: left;
 }
 
 /* ---------------------------------------------------------------- cluster node */
@@ -1040,31 +1108,90 @@ body.sidebar-resizing .react-flow {
   pointer-events: none;
 }
 
-.sidebar-head {
+.sidebar-tabs {
   display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
+  gap: 2px;
+  padding: 0 6px;
   flex: none;
-  min-width: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
 }
 
-.sidebar-name {
-  font-weight: 650;
-  font-size: 14px;
+.sidebar-tab {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 10px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  border-bottom: 2px solid transparent;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  max-width: 60%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.sidebar-tab:hover {
+  color: var(--text);
+  background: var(--bg-elevated);
+}
+
+/* Accent on the active tab is selection-adjacent, which is what the palette
+   rule reserves it for. */
+.sidebar-tab--active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+/* The details tab is labelled with the node's own name, so it reads as an
+   identifier rather than a section heading. */
+.sidebar-tab--details {
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.sidebar-tab-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
 }
 
-.sidebar-title {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-dim);
+.sidebar-tab-close {
+  flex: none;
+  opacity: 0;
+  color: var(--text-faint);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+
+.sidebar-tab:hover .sidebar-tab-close,
+.sidebar-tab--active .sidebar-tab-close {
+  opacity: 1;
+}
+
+.sidebar-tab-close:hover {
+  color: var(--text);
+}
+
+.sidebar-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* display:flex above beats the UA [hidden] rule, so restate it. */
+.sidebar-pane[hidden] {
+  display: none;
 }
 
 .kind-badge {
@@ -1078,48 +1205,6 @@ body.sidebar-resizing .react-flow {
   padding: 1px 7px;
 }
 
-.sidebar-close {
-  margin-left: auto;
-  flex: none;
-  font-size: 16px;
-  line-height: 1;
-  color: var(--text-dim);
-  padding: 2px 6px;
-  border-radius: var(--radius-sm);
-}
-
-.sidebar-close:hover {
-  color: var(--text);
-  background: var(--bg-elevated);
-}
-
-.sidebar-path {
-  flex: none;
-  padding: 6px 12px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-faint);
-  border-bottom: 1px solid var(--border);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sidebar-lines {
-  color: var(--text-faint);
-}
-
-.sidebar-source {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-}
-
-.sidebar-source .source-view pre {
-  min-height: 100%;
-  border-radius: 0;
-}
-
 .sidebar-placeholder {
   display: flex;
   align-items: center;
@@ -1129,7 +1214,7 @@ body.sidebar-resizing .react-flow {
   font-size: 12px;
 }
 
-/* -------- tree mode -------- */
+/* -------- files tab -------- */
 
 .sidebar-tree {
   flex: 1;
@@ -1156,13 +1241,58 @@ body.sidebar-resizing .react-flow {
   color: var(--text);
 }
 
+/* Current view: quiet. It answers "where am I looking", which is not a
+   selection, a search hit or a hover neighborhood — the three things the brief
+   reserves accent for. A left rail marks it without spending color. */
 .tree-row--current {
-  background: var(--accent-soft);
+  position: relative;
+  background: var(--bg-elevated);
   color: var(--text);
 }
 
-.tree-row--current .tree-name {
+.tree-row--current::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--edge);
+}
+
+/* Selection: loud. This one IS accent's job. */
+.tree-row--selected {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+  color: var(--text);
+}
+
+.tree-row--current .tree-name,
+.tree-row--selected .tree-name {
   font-weight: 600;
+}
+
+/* A symbol has no row of its own, so its declaring file stands in and names
+   the real target — otherwise the file looks selected when a function is. */
+.tree-proxy-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  flex: none;
+  max-width: 45%;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tree-proxy-chip:hover {
+  color: var(--text);
 }
 
 .tree-chevron {
@@ -1522,4 +1652,264 @@ body.sidebar-resizing .react-flow {
 
 .function-view-source .source-view pre {
   max-height: calc(100vh - 300px);
+}
+
+/* ------------------------------------------------------- sidebar details tab */
+
+.sidebar-details {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* Identity stays pinned: scrolling a 3000-line file must not cost you the
+   answer to "what am I looking at". */
+.detail-identity {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.detail-identity-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+/* Deliberately NOT nowrap: the sidebar is the surface where the full name is
+   always readable, however long it is. */
+.detail-name {
+  font-weight: 650;
+  font-size: 14px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.detail-open {
+  margin-left: auto;
+  flex: none;
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.detail-open:hover {
+  color: var(--text);
+  background: var(--bg-elevated);
+}
+
+.detail-path {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+
+.detail-metrics {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* Unclamped, unlike the card's two-line box — that clamp exists only because
+   ELK has to know the card's height in advance. */
+.detail-signature {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--card-bg-soft);
+  border: 1px solid var(--card-border-soft);
+  border-radius: var(--radius-sm);
+  padding: 4px 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.detail-section {
+  border-bottom: 1px solid var(--border);
+}
+
+.detail-section-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  text-align: left;
+}
+
+.detail-section-head:hover {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+.detail-section-chevron {
+  flex: none;
+  width: 13px;
+  font-size: 9px;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+.detail-section-count {
+  margin-left: auto;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-faint);
+}
+
+.detail-section-body {
+  padding: 2px 8px 10px;
+}
+
+/* Source is capped rather than flex:1 — an enormous file must not bury the
+   declaration list below it. */
+.detail-section--source .detail-section-body {
+  padding: 0;
+  max-height: 55vh;
+  overflow: auto;
+}
+
+.detail-section--source .source-view pre {
+  border-radius: 0;
+}
+
+.detail-symbol-group {
+  margin-top: 6px;
+}
+
+/* A row of two sibling buttons: the chevron collapses the group, the rest of
+   the row opens the file. Nested buttons would be invalid markup, and these
+   two do genuinely different things. */
+.detail-symbol-group-head {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.detail-symbol-group-toggle {
+  flex: none;
+  width: 14px;
+  padding: 3px 0;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--text-faint);
+  text-align: left;
+}
+
+.detail-symbol-group-toggle:hover {
+  color: var(--text);
+}
+
+.detail-symbol-group-open {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px 3px 0;
+  font-size: 11px;
+  color: var(--text-dim);
+  text-align: left;
+  border-radius: var(--radius-sm);
+}
+
+.detail-symbol-group-open:hover {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+/* The shallow tree: declarations sit under their file behind a guide rail,
+   aligned to the chevron so the rail reads as the file's own spine. */
+.detail-symbol-children {
+  margin-left: 6px;
+  padding-left: 8px;
+  border-left: 1px solid var(--card-border-soft);
+}
+
+.detail-symbol-group-name {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-symbol-group-path {
+  margin-left: auto;
+  padding-left: 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-symbol-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.detail-symbol-row:hover {
+  background: var(--bg-elevated);
+}
+
+.detail-symbol-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A dim right-aligned word instead of a pill per row: two hundred pills is
+   noise, and all this has to answer is "function or const?". */
+.detail-symbol-kind {
+  margin-left: auto;
+  flex: none;
+  font-size: 10px;
+  color: var(--text-faint);
+  text-transform: lowercase;
+}
+
+.detail-empty {
+  color: var(--text-faint);
+  font-size: 12px;
+  padding: 4px 6px;
+}
+
+.detail-missing {
+  padding: 24px 14px;
+  color: var(--text-dim);
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.detail-missing-action {
+  color: var(--accent);
+  font-size: 12px;
 }

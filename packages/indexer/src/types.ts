@@ -40,6 +40,19 @@ export interface LanguageAdapter {
    * dist/index.js) to the walked source file it is built from; null if unknown.
    */
   resolveEntrySource?(entryRelPath: string, pkg: WorkspacePackage, ctx: ResolveContext): string | null;
+  /**
+   * The LSP `languageId` to open `relFilePath` with (`textDocument/didOpen`).
+   *
+   * MANDATORY where one adapter owns several dialects of the same language:
+   * the server picks its PARSER from this string, not from the file
+   * extension. Opening a `.tsx` file as `typescript` makes tsserver parse
+   * every JSX tag as a type assertion, and `documentSymbol` then answers with
+   * the object literals and calls of that misparse instead of the file's real
+   * declarations.
+   *
+   * Defaults to {@link id} when the adapter does not implement it.
+   */
+  languageIdFor?(relFilePath: string): string;
   /** How to launch this language's LSP server. */
   lspCommand(repoRoot: string): { command: string; args: readonly string[] };
   /** Map an LSP SymbolKind number to an IR NodeKind; null = skip the symbol. */

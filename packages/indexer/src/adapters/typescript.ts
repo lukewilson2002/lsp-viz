@@ -157,6 +157,27 @@ export const typescriptAdapter: LanguageAdapter = {
     );
   },
 
+  /**
+   * tsserver selects its parser (ScriptKind) from the languageId, NOT from the
+   * file extension. `.tsx` opened as `typescript` parses `<span x="y">{v}</span>`
+   * as a type assertion applied to an object literal, and documentSymbol then
+   * reports that misparse's object-literal members as file-level declarations.
+   */
+  languageIdFor(relFilePath: string): string {
+    switch (path.posix.extname(relFilePath)) {
+      case '.tsx':
+        return 'typescriptreact';
+      case '.jsx':
+        return 'javascriptreact';
+      case '.js':
+      case '.mjs':
+      case '.cjs':
+        return 'javascript';
+      default:
+        return 'typescript';
+    }
+  },
+
   lspCommand(_repoRoot: string): { command: string; args: readonly string[] } {
     return { command: process.execPath, args: [LSP_CLI, '--stdio'] };
   },

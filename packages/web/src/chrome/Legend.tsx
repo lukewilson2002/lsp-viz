@@ -110,7 +110,7 @@ export function Legend() {
       </div>
       <div className="legend-row">
         <EdgeSample dash="4 4" dim />
-        <span>portal (cross-file call)</span>
+        <span>portal (cross-file link)</span>
       </div>
     </div>
   );

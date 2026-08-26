@@ -1,4 +1,10 @@
-import type { EdgeKind, GraphNode, GraphViewResponse, NodeDetailResponse } from '@lsp-viz/core';
+import type {
+  EdgeKind,
+  GraphNode,
+  GraphViewResponse,
+  LinkCounts,
+  NodeDetailResponse,
+} from '@lsp-viz/core';
 import {
   Background,
   MarkerType,
@@ -15,6 +21,7 @@ import type { LayoutDirection, LayoutEdgeInput, LayoutNodeInput } from '../layou
 import { useLayout } from '../layout/useLayout';
 import { selectCurrentGraph, selectTopEntry, useAppStore } from '../state/store';
 import type { ViewEntry } from '../state/store';
+import { cardVariantForKind } from './cardModel';
 import { ClusterNode } from './nodes/ClusterNode';
 import { ContainerNode } from './nodes/ContainerNode';
 import { FileNode } from './nodes/FileNode';
@@ -25,7 +32,6 @@ import {
   LOD_MAX_VISIBLE,
   clusterDimensions,
   nodeDimensions,
-  nodeTypeForKind,
   portalDimensions,
 } from './types';
 import type { AppEdge, AppNode, IOExpansion } from './types';
@@ -55,11 +61,18 @@ interface DisplayEdge {
   portal: boolean;
 }
 
+/** One ghost node: an external symbol, or a roll-up of several from one parent. */
+interface DisplayPortal {
+  node: GraphNode;
+  /** The rolled-up symbols' names, or undefined for a plain one-symbol ghost. */
+  groupNames?: string[];
+}
+
 interface ViewModel {
   /** Real children rendered as full cards (post-LOD). */
   visible: GraphNode[];
-  /** External symbols rendered as ghost portal nodes. */
-  portals: GraphNode[];
+  /** External symbols rendered as ghost portal nodes (post roll-up). */
+  portals: DisplayPortal[];
   /** How many children collapsed into the "+N more" node (0 = none). */
   clusterCount: number;
   edges: DisplayEdge[];
@@ -70,21 +83,86 @@ function nodeWeight(node: GraphNode): number {
 }
 
 /**
- * Apply level-of-detail (cluster the smallest children past the cap) and
- * merge edges accordingly: edges touching clustered nodes re-target the
- * cluster node, deduped with counts summed. Portal edges keep their own
- * identity (they style differently).
+ * Roll external symbols up onto the declaration that contains them, whenever
+ * one parent supplied more than one of them.
+ *
+ * Without this, "twenty symbols in store.ts reference types declared here"
+ * draws twenty near-identical ghosts and twenty arrows, and a view about THIS
+ * file becomes mostly a view about its neighbour. One ghost carrying a weighted
+ * arrow says the same thing at this level of abstraction, and is exactly the
+ * brief's aggregation rule (an edge at level N is the roll-up of level N+1)
+ * applied across the view boundary instead of down it.
+ *
+ * A parent of ONE stays expanded: the per-symbol ghost is strictly more
+ * informative and costs nothing, and it keeps the common view unchanged.
+ *
+ * Returns the id remapping (external symbol id -> ghost id) plus the ghosts.
+ */
+function rollUpPortals(
+  graph: GraphViewResponse,
+  keepId: string | null,
+): {
+  portals: DisplayPortal[];
+  remap: Map<string, string>;
+} {
+  const parents = new Map(graph.externalParents.map((p) => [p.id, p]));
+  const groups = new Map<string, GraphNode[]>();
+  const loose: GraphNode[] = [];
+  for (const external of graph.externalNodes) {
+    const parentId = external.parentId;
+    // No resolvable parent outside the view (the server only ships those) —
+    // nothing to roll onto, so the symbol stays its own ghost.
+    if (parentId === null || !parents.has(parentId)) {
+      loose.push(external);
+      continue;
+    }
+    const group = groups.get(parentId);
+    if (group) group.push(external);
+    else groups.set(parentId, [external]);
+  }
+
+  const portals: DisplayPortal[] = loose.map((node) => ({ node }));
+  const remap = new Map<string, string>();
+  for (const [parentId, members] of groups) {
+    const parent = parents.get(parentId);
+    // A landed-on/selected ghost must stay on screen as ITSELF — rolling it
+    // into its parent would leave the view with nothing to centre or select.
+    const holdsKeep = keepId !== null && members.some((m) => m.id === keepId);
+    if (members.length < 2 || parent === undefined || holdsKeep) {
+      for (const member of members) portals.push({ node: member });
+      continue;
+    }
+    for (const member of members) remap.set(member.id, parentId);
+    portals.push({ node: parent, groupNames: members.map((m) => m.name).sort() });
+  }
+  return { portals, remap };
+}
+
+/**
+ * Apply level-of-detail and merge edges accordingly: edges touching clustered
+ * nodes re-target the cluster node, edges touching a rolled-up external symbol
+ * re-target its ghost, all deduped with counts summed. Portal edges keep their
+ * own identity (they style differently).
+ *
+ * The cap is on RENDERED nodes, not on children: a ghost occupies the same
+ * canvas and the same layout layer as a card, so counting only cards let a
+ * 14-declaration file draw 46 nodes and fall below the label threshold. Ghosts
+ * roll up first (they are context, not content); only then do the smallest
+ * children collapse into "+N more".
  */
 function buildViewModel(
   graph: GraphViewResponse,
   showAll: boolean,
   keepId: string | null,
 ): ViewModel {
+  const { portals, remap } = rollUpPortals(graph, keepId);
+
   let visible = graph.children;
   const clustered = new Set<string>();
-  if (!showAll && graph.children.length > LOD_MAX_VISIBLE) {
+  const childBudget = Math.max(1, LOD_MAX_VISIBLE - portals.length);
+  if (!showAll && graph.children.length > childBudget) {
     const sorted = [...graph.children].sort((a, b) => nodeWeight(b) - nodeWeight(a));
-    const keep = new Set(sorted.slice(0, LOD_MAX_VISIBLE - 1).map((n) => n.id));
+    const keep = new Set(sorted.slice(0, childBudget - 1).map((n) => n.id));
     for (const child of graph.children) {
       if (!keep.has(child.id)) clustered.add(child.id);
     }
@@ -103,7 +181,8 @@ function buildViewModel(
 
   const childIds = new Set(graph.children.map((c) => c.id));
   const portalIds = new Set(graph.externalNodes.map((n) => n.id));
-  const mapEnd = (id: string): string => (clustered.has(id) ? CLUSTER_NODE_ID : id);
+  const mapEnd = (id: string): string =>
+    clustered.has(id) ? CLUSTER_NODE_ID : (remap.get(id) ?? id);
 
   const merged = new Map<string, DisplayEdge>();
   const addEdge = (edge: { id: string; kind: EdgeKind; from: string; to: string; count: number }, portal: boolean): void => {
@@ -129,35 +208,34 @@ function buildViewModel(
     if (fromKnown && toKnown) addEdge(edge, true);
   }
 
+  // A view re-attributes a descendant's edge to the card that contains it, so
+  // two edges the indexer knows are distinct (a method CALLS a helper, a
+  // sibling REFERENCES the class) can land on the same pair of cards. Drawing
+  // both paints a dotted line exactly on top of a solid one; the call is the
+  // stronger statement, so it wins.
+  for (const [key, edge] of [...merged]) {
+    if (edge.kind !== 'references') continue;
+    if (merged.has(`${edge.portal ? 'p' : 'e'}|calls|${edge.from}|${edge.to}`)) merged.delete(key);
+  }
+
   return {
     visible,
-    portals: graph.externalNodes,
+    portals,
     clusterCount: clustered.size,
     edges: [...merged.values()],
   };
 }
 
-interface IOCounts {
-  in: number;
-  out: number;
-}
-
-/** Per-node in/out counts over the view's displayed edges (portals included,
- * cluster-retargeted edges count toward the cluster). */
-function computeIOCounts(model: ViewModel | null): Map<string, IOCounts> {
-  const map = new Map<string, IOCounts>();
-  if (!model) return map;
-  const bump = (id: string, key: 'in' | 'out'): void => {
-    let entry = map.get(id);
-    if (!entry) map.set(id, (entry = { in: 0, out: 0 }));
-    entry[key] += 1;
-  };
-  for (const edge of model.edges) {
-    bump(edge.from, 'out');
-    bump(edge.to, 'in');
-  }
-  return map;
-}
+/*
+ * A card's links row reports the node's OWN links, which the server ships with
+ * the view (`GraphViewResponse.linkCounts`) precisely so the row stays the same
+ * set the expanded panel lists. Counting the drawn arrows here instead — which
+ * this module used to do — makes the two disagree: a view merges parallel edges
+ * into one arrow, re-attributes a descendant's edges to the card containing it,
+ * and hides everything the LOD cluster swallowed. So there is no counting here
+ * at all, only this fallback for a child the response somehow didn't count.
+ */
+const NO_LINKS: LinkCounts = { inCount: 0, outCount: 0 };
 
 /**
  * The expansion applied to a node's dimensions, or null when collapsed.
@@ -183,6 +261,11 @@ const ARROW_KEYS: Record<string, ArrowDirection> = {
   ArrowLeft: 'left',
   ArrowRight: 'right',
 };
+
+/** True when focus sits inside the right sidebar — its own controls own the keys. */
+function isSidebarTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && target.closest('.sidebar') !== null;
+}
 
 function nodeCenter(node: AppNode): { x: number; y: number } {
   return {
@@ -268,9 +351,6 @@ function GraphCanvasInner() {
     [graph, showAll, mountSelectionId],
   );
 
-  // In/out badge counts over the displayed edges (no fetch needed).
-  const ioCounts = useMemo(() => computeIOCounts(model), [model]);
-
   // Expansion signature: relayout only when an expansion (or its row counts)
   // actually changes — not when unrelated node details get cached.
   const expandedIO = useAppStore((s) => s.expandedIO);
@@ -283,10 +363,10 @@ function GraphCanvasInner() {
       if (e) parts.push(`${child.id}:${e.incoming ?? '?'}/${e.outgoing ?? '?'}`);
     }
     return parts.join('|');
-  }, [model, ioCounts, expandedIO, nodeDetails]);
+  }, [model, expandedIO, nodeDetails]);
 
   // Layout inputs (sizes are pre-computed so ELK and fitView agree). Open
-  // in/out panels grow their node so ELK re-layouts around the real size.
+  // links panels grow their node so ELK re-layouts around the real size.
   const layoutInputs = useMemo<{
     nodes: LayoutNodeInput[] | null;
     edges: LayoutEdgeInput[] | null;
@@ -298,14 +378,17 @@ function GraphCanvasInner() {
         id: c.id,
         ...nodeDimensions(c, expansionFor(c, state.expandedIO, state.nodeDetails)),
       })),
-      ...model.portals.map((p) => ({ id: p.id, ...portalDimensions(p) })),
+      ...model.portals.map((p) => ({
+        id: p.node.id,
+        ...portalDimensions(p.node, p.groupNames?.length),
+      })),
       ...(model.clusterCount > 0 ? [{ id: CLUSTER_NODE_ID, ...clusterDimensions() }] : []),
     ];
     const edges: LayoutEdgeInput[] = model.edges.map((e) => ({ id: e.id, from: e.from, to: e.to }));
     return { nodes, edges };
     // expansionSig stands in for the expandedIO/nodeDetails slices used above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [model, ioCounts, expansionSig]);
+  }, [model, expansionSig]);
 
   const { positions, layouting, error: layoutError } = useLayout(
     top?.nodeId ?? '',
@@ -336,32 +419,31 @@ function GraphCanvasInner() {
     const state = useAppStore.getState();
     const flowNodes: AppNode[] = [];
     for (const child of model.visible) {
-      const counts = ioCounts.get(child.id) ?? { in: 0, out: 0 };
-      const dims = nodeDimensions(
-        child,
-        expansionFor(child, state.expandedIO, state.nodeDetails),
-      );
+      const dims = nodeDimensions(child, expansionFor(child, state.expandedIO, state.nodeDetails));
       const pos = positions.get(child.id) ?? { x: 0, y: 0 };
       flowNodes.push({
         id: child.id,
-        type: nodeTypeForKind(child.kind),
+        type: cardVariantForKind(child.kind),
         position: { x: pos.x, y: pos.y },
         width: dims.width,
         height: dims.height,
-        data: { node: child, direction, viewIn: counts.in, viewOut: counts.out },
+        data: { node: child, direction, links: graph?.linkCounts[child.id] ?? NO_LINKS },
       });
     }
     for (const portal of model.portals) {
-      const counts = ioCounts.get(portal.id) ?? { in: 0, out: 0 };
-      const dims = portalDimensions(portal);
-      const pos = positions.get(portal.id) ?? { x: 0, y: 0 };
+      const groupCount = portal.groupNames?.length;
+      const dims = portalDimensions(portal.node, groupCount);
+      const pos = positions.get(portal.node.id) ?? { x: 0, y: 0 };
       flowNodes.push({
-        id: portal.id,
+        id: portal.node.id,
         type: 'portal',
         position: { x: pos.x, y: pos.y },
         width: dims.width,
         height: dims.height,
-        data: { node: portal, direction, viewIn: counts.in, viewOut: counts.out },
+        data:
+          groupCount !== undefined
+            ? { node: portal.node, direction, groupCount, groupNames: portal.groupNames }
+            : { node: portal.node, direction },
       });
     }
     if (model.clusterCount > 0) {
@@ -384,14 +466,14 @@ function GraphCanvasInner() {
     lastViewIdRef.current = viewId;
     if (viewChanged) userInteractedRef.current = false;
     pendingViewportRef.current = { restore: entry?.viewport ?? null, refresh: !viewChanged };
-  }, [model, positions, direction, ioCounts]);
+  }, [model, positions, direction, graph]);
 
   // Hover neighborhood (adjacency over the displayed edges, portals included).
   const nodeIdSet = useMemo(() => {
     if (!model) return new Set<string>();
     const ids = new Set<string>();
     for (const n of model.visible) ids.add(n.id);
-    for (const p of model.portals) ids.add(p.id);
+    for (const p of model.portals) ids.add(p.node.id);
     if (model.clusterCount > 0) ids.add(CLUSTER_NODE_ID);
     return ids;
   }, [model]);
@@ -431,7 +513,9 @@ function GraphCanvasInner() {
       const hot = hoverActive && (edge.from === hoverId || edge.to === hoverId);
       const dim = hoverActive && !hot;
       const labelled = edge.count > 1 && (hot || hoveredEdgeId === edge.id);
-      const dash = edge.portal ? '4 4' : EDGE_DASH[edge.kind];
+      // A portal is dimmed and ghosted by its class; its DASH still has to say
+      // what kind of link it is, or every cross-file reference draws as a call.
+      const dash = edge.portal ? (EDGE_DASH[edge.kind] ?? '4 4') : EDGE_DASH[edge.kind];
       const classNames = [
         edge.portal ? 'edge--portal' : '',
         hot ? 'edge--hot' : '',
@@ -546,7 +630,12 @@ function GraphCanvasInner() {
       if (node.type === 'cluster') {
         setShowAll();
       } else if (node.type === 'portal') {
-        void navigateToNode(node.data.node.id, { landOnParent: true });
+        // A rolled-up ghost IS the destination (a file/class), so open its own
+        // view; a single-symbol ghost lands in its parent's view, centred.
+        void navigateToNode(
+          node.data.node.id,
+          node.data.groupCount !== undefined ? undefined : { landOnParent: true },
+        );
       } else {
         drillInto(node.data.node);
       }
@@ -560,6 +649,7 @@ function GraphCanvasInner() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (isEditableTarget(event.target)) return;
+      if (isSidebarTarget(event.target)) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       const state = useAppStore.getState();
       if (state.paletteOpen) return;
@@ -593,17 +683,20 @@ function GraphCanvasInner() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
-  // Zoom level-of-detail: hide labels once text stops being legible
-  // (CSS-driven). Kept below the zoom a default fitView lands on, so a
-  // freshly opened view never shows blank cards.
-  const labelsHidden = useFlowStore((s) => s.transform[2] < 0.35);
+  // Zoom level-of-detail, two tiers (CSS-driven). Cards now carry 4-6 rows,
+  // so the old all-or-nothing threshold either rendered 4px text or blanked
+  // the card entirely. The dim tier starts where hiding used to, so this can
+  // only add detail: 0.2-0.34 keeps the glyph + name, and full detail still
+  // appears at exactly the zoom it did before.
+  const zoom = useFlowStore((s) => s.transform[2]);
+  const lod = zoom < 0.2 ? ' labels-hidden' : zoom < 0.34 ? ' labels-dim' : '';
 
   const indexing = indexProgress !== null || metaIndexing;
   const showEmpty =
     graph !== undefined && !graphLoading && !layouting && graph.children.length === 0;
 
   return (
-    <div className={`graph-canvas${labelsHidden ? ' labels-hidden' : ''}`}>
+    <div className={`graph-canvas${lod}`}>
       <ReactFlow<AppNode, AppEdge>
         nodes={renderNodes}
         edges={renderEdges}

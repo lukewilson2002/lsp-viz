@@ -2,6 +2,13 @@
  * createIndexer orchestration: workspace discovery → file walk → structural
  * phase (tree-sitter) → semantic phase (LSP) → aggregate materialization,
  * with full and mtime-diff modes, progress events, and cancellation.
+ *
+ * The semantic phase takes TWO file lists, not one, because its two sweeps
+ * answer different questions. `files` is "whose symbols and calls need
+ * (re-)crawling" — the mtime-diff set. `referenceFiles` is "whose declarations
+ * need a find-all-references pass", and on a diff run that is a strictly larger
+ * set: every file is asked about ITS OWN declarations, but the edge that comes
+ * back belongs to the file doing the referring (see {@link importClosure}).
  */
 
 import { statSync } from 'node:fs';
@@ -9,7 +16,7 @@ import path from 'node:path';
 import type { IndexStats } from '@lsp-viz/core';
 import { typescriptAdapter } from './adapters/typescript.js';
 import { runSemanticPhase } from './semantic.js';
-import { runStructuralPhase } from './structural.js';
+import { fileNodeId, runStructuralPhase } from './structural.js';
 import type {
   Indexer,
   IndexerOptions,
@@ -21,6 +28,30 @@ import { walkFiles } from './walk.js';
 import { discoverPackages } from './workspace.js';
 
 const DEFAULT_CONCURRENCY = 16;
+
+/**
+ * The changed files plus everything they (transitively) import.
+ *
+ * A `references` edge is produced while crawling the REFERENT's file but owned
+ * — `sourcePath` — by the REFERRER's. When a referrer changes, its edges are
+ * deleted with the rest of its file data while the referent is untouched and
+ * would never be re-swept. Only the referrer's import closure can recreate
+ * them, and `getCalls` on a file node returns exactly its import links.
+ */
+function importClosure(store: IndexerOptions['store'], seeds: readonly string[]): string[] {
+  const seen = new Set(seeds);
+  const queue = [...seeds];
+  while (queue.length > 0) {
+    const file = queue.shift() as string;
+    for (const link of store.getCalls(fileNodeId(file)).outgoing) {
+      if (link.edge.kind !== 'imports' || link.node.kind !== 'file') continue;
+      if (seen.has(link.node.path)) continue;
+      seen.add(link.node.path);
+      queue.push(link.node.path);
+    }
+  }
+  return [...seen];
+}
 
 /** Map each extension to the first adapter that claims it. */
 function adapterByExtension(adapters: readonly LanguageAdapter[]): Map<string, LanguageAdapter> {
@@ -120,8 +151,14 @@ export function createIndexer(opts: IndexerOptions): Indexer {
     const tSemantic = Date.now();
     let symbols = 0;
     let callEdges = 0;
+    let refEdges = 0;
     if (!cancelled) {
       emit({ type: 'phase', phase: 'semantic' });
+      // Computed AFTER the structural phase so the changed files' import edges
+      // are already rebuilt. Reference sweep only — pulling these back into the
+      // symbol/call sweep would double every call weight (addEdge accumulates).
+      const referenceTargets =
+        effectiveMode === 'full' ? allFilesList : importClosure(store, structuralTargets);
       const pending = new Set(
         store
           .listFileRecords()
@@ -133,18 +170,23 @@ export function createIndexer(opts: IndexerOptions): Indexer {
         const files = allFilesList.filter(
           (f) => pending.has(f) && extMap.get(path.posix.extname(f)) === adapter,
         );
-        if (files.length === 0) continue;
+        const referenceFiles = referenceTargets.filter(
+          (f) => extMap.get(path.posix.extname(f)) === adapter,
+        );
+        if (files.length === 0 && referenceFiles.length === 0) continue;
         const result = await runSemanticPhase({
           repoRoot,
           store,
           adapter,
           files,
+          referenceFiles,
           concurrency,
           emit,
           isCancelled: () => cancelled,
         });
         symbols += result.symbols;
         callEdges += result.callEdges;
+        refEdges += result.refEdges;
       }
     }
     const semanticMs = Date.now() - tSemantic;
@@ -175,7 +217,8 @@ export function createIndexer(opts: IndexerOptions): Indexer {
     emit({ type: 'done', stats });
     console.log(
       `[indexer] ${effectiveMode}${cancelled ? ' (cancelled)' : ''}: ${stats.files} files, ` +
-        `${stats.nodes} nodes, ${stats.edges} edges, ${symbols} symbols, ${callEdges} call edges ` +
+        `${stats.nodes} nodes, ${stats.edges} edges, ${symbols} symbols, ${callEdges} call edges, ` +
+        `${refEdges} reference edges ` +
         `(structural ${structuralMs}ms, semantic ${semanticMs}ms, aggregate ${aggregateMs}ms, ` +
         `total ${stats.durationMs}ms)`,
     );

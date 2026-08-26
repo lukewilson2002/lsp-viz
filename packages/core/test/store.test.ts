@@ -125,6 +125,12 @@ describe('GraphStore', () => {
     expect(outgoing.map((l) => l.node.id).sort()).toEqual(['fnBaz', 'fnUtil']);
   });
 
+  it('walks descendants transitively, including symbols nested in a class', () => {
+    const fileIds = store.getDescendants('fileA1').map((n) => n.id).sort();
+    expect(fileIds).toEqual(['clsC', 'fnFoo', 'mBar']);
+    expect(store.getDescendants('clsC').map((n) => n.id)).toEqual(['mBar']);
+  });
+
   it('walks ancestors root-first', () => {
     expect(store.getAncestors('mBar').map((n) => n.id)).toEqual([
       ROOT_NODE_ID,

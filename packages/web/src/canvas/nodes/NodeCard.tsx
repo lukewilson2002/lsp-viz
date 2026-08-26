@@ -1,44 +1,38 @@
 /**
  * Shared scaffolding for the three graph-backed card types (container, file,
- * symbol): handles, head (glyph + name + optional entry badge + IOBadge),
- * a collapsed-only summary, and the expanded in/out panel. Each node type
- * supplies only what actually varies — its title, summary content, and glyph
- * class (container/file glyphs are untinted today; only symbol glyphs carry
- * the kind-color modifier — preserved here rather than unified, since that's
- * a visual change, not a structural one).
+ * symbol). Every row a card can show is decided by `cardRows` — the same
+ * function `canvas/types.ts` measures — so nothing renders that ELK did not
+ * reserve height for, and the per-kind components carry no layout knowledge.
+ *
+ * All rows are unconditional: identifying a node (name, path, kind, metrics,
+ * link counts) must never require a click or a hover. The only thing behind
+ * an interaction is the enumerated link list, which is unbounded and so
+ * cannot live in a fixed-height card.
  */
 
-import type { GraphNode } from '@lsp-viz/core';
-import type { ReactNode } from 'react';
+import type { GraphNode, LinkCounts } from '@lsp-viz/core';
 import type { LayoutDirection } from '../../layout/messages';
+import type { CardVariant } from '../cardModel';
+import { cardRows } from '../cardModel';
 import { kindGlyph } from '../glyphs';
 import { NodeHandles } from './NodeHandles';
-import { IOBadge, IOPanel, useNodeIO } from './NodeIO';
+import { IOPanel, LinksRow, useNodeIO } from './NodeIO';
 
 export function NodeCard({
   variant,
   node,
   direction,
   selected,
-  viewIn,
-  viewOut,
-  title,
-  glyphClassName = 'kind-glyph',
-  entryBadge = false,
-  summary,
+  links,
 }: {
-  variant: 'container' | 'file' | 'symbol';
+  variant: CardVariant;
   node: GraphNode;
   direction: LayoutDirection;
   selected: boolean;
-  viewIn: number;
-  viewOut: number;
-  title: string;
-  glyphClassName?: string;
-  entryBadge?: boolean;
-  summary: ReactNode;
+  links: LinkCounts;
 }) {
   const { expanded, detail } = useNodeIO(node.id);
+  const rows = cardRows(node);
   const classes = [
     'node-card',
     `node-card--${variant}`,
@@ -48,17 +42,30 @@ export function NodeCard({
     .filter(Boolean)
     .join(' ');
   return (
-    <div className={classes} title={title}>
+    <div className={classes}>
       <NodeHandles direction={direction} />
       <div className="node-card-head">
-        <span className={glyphClassName} aria-hidden>
+        <span className={`kind-glyph kind-glyph--${node.kind}`} aria-hidden>
           {kindGlyph(node.kind)}
         </span>
-        <span className="node-card-name">{node.name}</span>
-        {entryBadge ? <span className="entry-badge">entry</span> : null}
-        <IOBadge id={node.id} viewIn={viewIn} viewOut={viewOut} expanded={expanded} />
+        <span className="node-card-name" title={node.name}>
+          {rows.name}
+        </span>
+        {rows.entry ? <span className="entry-badge">entry</span> : null}
       </div>
-      {!expanded ? summary : null}
+      {rows.signature !== null ? (
+        <div className="node-card-signature" title={rows.signature}>
+          {rows.signature}
+        </div>
+      ) : null}
+      {rows.path !== null ? (
+        <div className="node-card-path" title={node.path}>
+          {rows.path}
+        </div>
+      ) : null}
+      <div className="node-card-facts">{rows.facts}</div>
+      {rows.exports !== null ? <div className="node-card-exports">{rows.exports}</div> : null}
+      <LinksRow node={node} links={links} expanded={expanded} />
       {expanded ? <IOPanel node={node} detail={detail} /> : null}
     </div>
   );

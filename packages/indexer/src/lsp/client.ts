@@ -28,6 +28,7 @@ import {
   HoverRequest,
   InitializedNotification,
   InitializeRequest,
+  ReferencesRequest,
   ShutdownRequest,
   WorkspaceSymbolRequest,
 } from 'vscode-languageserver-protocol';
@@ -37,6 +38,7 @@ import type {
   DocumentSymbol,
   Hover,
   InitializeParams,
+  Location,
   Position,
   SymbolInformation,
 } from 'vscode-languageserver-protocol';
@@ -189,6 +191,7 @@ export class LspClient {
           },
           hover: { contentFormat: ['plaintext', 'markdown'] },
           callHierarchy: {},
+          references: {},
         },
         workspace: { workspaceFolders: true, symbol: {} },
       },
@@ -218,13 +221,19 @@ export class LspClient {
     await this.start();
   }
 
+  /**
+   * `textDocument/didOpen`. The languageId comes from the adapter per FILE, not
+   * from the adapter id: a server chooses its parser from this string, so one
+   * adapter covering several dialects (`.ts` vs `.tsx`) must be able to say
+   * which one this file is. Falls back to the adapter id.
+   */
   async openDocument(relPath: string, text: string): Promise<void> {
     const session = this.currentSession();
     await this.request(session, (conn) =>
       conn.sendNotification(DidOpenTextDocumentNotification.type, {
         textDocument: {
           uri: this.uriFor(relPath),
-          languageId: this.adapter.id,
+          languageId: this.adapter.languageIdFor?.(relPath) ?? this.adapter.id,
           version: 1,
           text,
         },
@@ -269,6 +278,30 @@ export class LspClient {
       conn.sendRequest(CallHierarchyPrepareRequest.type, {
         textDocument: { uri: this.uriFor(relPath) },
         position,
+      }),
+    );
+  }
+
+  /**
+   * Every use site of the symbol at `position`. Unlike call hierarchy this
+   * also reports non-call uses (type annotations, default parameter values,
+   * const reads) — the raw material for `references` edges.
+   *
+   * The document MUST be open (didOpen) first: tsserver answers a reference
+   * request for a closed file with an empty array rather than an error, which
+   * would look like "this symbol is unused" instead of a failure.
+   */
+  async references(
+    relPath: string,
+    position: Position,
+    includeDeclaration = false,
+  ): Promise<Location[] | null> {
+    const session = this.currentSession();
+    return this.request(session, (conn) =>
+      conn.sendRequest(ReferencesRequest.type, {
+        textDocument: { uri: this.uriFor(relPath) },
+        position,
+        context: { includeDeclaration },
       }),
     );
   }

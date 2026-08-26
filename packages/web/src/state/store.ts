@@ -2,6 +2,14 @@
  * App state: the navigation stack (the core of the app), per-view graph data
  * with a cache for instant Back, selection/hover, live index progress from the
  * WebSocket, the search palette, and browser-history mirroring.
+ *
+ * It also owns the two surfaces that read a node rather than the graph: the
+ * card link panels and the sidebar. Both are backed by id-keyed response caches
+ * (`nodeDetails`, `symbols`, `sources`, `sourceLinks`, `tree`) that `invalidate()` drops when
+ * the index changes, plus UI bits that deliberately OUTLIVE a re-index because
+ * they are preferences, not data: `expandedIO`, `sidebarTab`,
+ * `detailCollapsed`. All of those are global rather than per-`ViewEntry`, so
+ * they survive Back/forward and a popstate rebuild.
  */
 
 import type {
@@ -11,13 +19,23 @@ import type {
   MetaResponse,
   NodeDetailResponse,
   NodeKind,
+  SourceLinksResponse,
   SourceResponse,
+  SymbolsResponse,
   TreeNode,
   ViewLevel,
   WsServerMessage,
 } from '@lsp-viz/core';
 import { create } from 'zustand';
-import { fetchGraph, fetchMeta, fetchNodeDetail, fetchSource, fetchTree } from '../api/client';
+import {
+  fetchGraph,
+  fetchMeta,
+  fetchNodeDetail,
+  fetchSource,
+  fetchSourceLinks,
+  fetchSymbols,
+  fetchTree,
+} from '../api/client';
 import { isLeafSymbolKind, levelForViewParent, ROOT_NODE_ID } from '../levels';
 
 /** Canvas pan/zoom — structurally identical to @xyflow/react's Viewport. */
@@ -26,6 +44,12 @@ export interface Viewport {
   y: number;
   zoom: number;
 }
+
+/** Which sidebar tab is showing. */
+export type SidebarTab = 'files' | 'details';
+
+/** Collapsible sections of the sidebar's Details tab. */
+export type DetailSectionId = 'source' | 'symbols' | 'incoming' | 'outgoing';
 
 /** One entry in the navigation stack. */
 export interface ViewEntry {
@@ -85,20 +109,63 @@ export interface AppState {
   l5: L5Data | null;
 
   /**
-   * Cached /api/node responses — feeds in-graph expanders, hover popovers and
-   * the sidebar. Invalidated with the graph cache on index:done.
+   * Cached /api/node responses — feeds the cards' expanded link panels, the
+   * sidebar's Details tab and its tab label, and the tree's proxy anchoring.
+   * Invalidated with the graph cache on index:done.
    */
   nodeDetails: Record<string, NodeDetailResponse>;
 
   /**
-   * In/out expansion state per node id, global (survives Back/forward).
-   * Toggled from the node cards' in/out badge.
+   * Which node cards have their link panel open, keyed by node id. Global
+   * (survives Back/forward); toggled from a card's links row, and read by
+   * `nodeDimensions` so ELK lays out around the open card.
    */
   expandedIO: Record<string, boolean>;
+
+  /**
+   * Which sidebar tab is showing. GLOBAL, not per ViewEntry: selectionId is
+   * already per-entry, so the tab is nearly a function of selection; the only
+   * free bit is "user clicked back to Files while keeping the selection", and
+   * threading that through makeEntry/entryCache/applySnapshot for one bit is
+   * not worth it. Matches the expandedIO precedent.
+   */
+  sidebarTab: SidebarTab;
+
+  /**
+   * Collapsed detail sections. An absent key means expanded. Keyed by SECTION,
+   * not by node id: "I don't want to read all the code" is a standing
+   * preference about a KIND of information, so it must survive selection
+   * changes, the DetailsPane remount, Back/forward and invalidate().
+   */
+  detailCollapsed: Partial<Record<DetailSectionId, boolean>>;
+
+  /** Cached /api/symbols responses; cleared with nodeDetails on index:done. */
+  symbols: Record<string, SymbolsResponse>;
+
+  /** Cached /api/source responses; cleared with nodeDetails on index:done. */
+  sources: Record<string, SourceResponse>;
+
+  /**
+   * Cached /api/links responses — the identifiers a node's source slice may
+   * turn into links. Keyed by the node whose SLICE is shown (a file and a
+   * function inside it get different sets), and dropped with the rest on
+   * index:done, since a re-index moves the very ids these point at.
+   */
+  sourceLinks: Record<string, SourceLinksResponse>;
 
   /** Cached /api/tree root for the sidebar tree; refetched on index:done. */
   tree: TreeNode | null;
   treeError: string | null;
+
+  /**
+   * Bumped once per `invalidate()`. The caches above are id-keyed, so a
+   * component that fetches into them from an effect keyed on the id alone
+   * never re-runs when they are wiped — it just renders its loading state
+   * forever. Watching the cached VALUE instead only heals components that read
+   * exactly one cache. This is the single "the index moved, refetch what you
+   * needed" signal; put it in the deps of any such effect.
+   */
+  dataEpoch: number;
 
   hoverId: string | null;
 
@@ -126,8 +193,16 @@ export interface AppState {
   clearPendingCenter: () => void;
   /** Fetch-and-cache one node's detail; null on failure. In-flight deduped. */
   ensureNodeDetail: (id: string) => Promise<NodeDetailResponse | null>;
-  /** Toggle a node card's in/out expansion (kicks off the detail fetch). */
+  /** Toggle a node card's links panel (kicks off the detail fetch). */
   toggleIOExpanded: (id: string) => void;
+  setSidebarTab: (tab: SidebarTab) => void;
+  toggleDetailSection: (id: DetailSectionId) => void;
+  /** Fetch-and-cache one node's declaration list; null on failure. */
+  ensureSymbols: (id: string) => Promise<SymbolsResponse | null>;
+  /** Fetch-and-cache one node's source slice; null when there is none. */
+  ensureSource: (id: string) => Promise<SourceResponse | null>;
+  /** Fetch-and-cache the clickable identifiers for one node's slice. */
+  ensureSourceLinks: (id: string) => Promise<SourceLinksResponse | null>;
   /** Fetch-and-cache the sidebar directory tree. */
   ensureTree: () => Promise<void>;
   /** Feed one WebSocket server message into the store. */
@@ -152,7 +227,7 @@ function makeEntry(node: Pick<GraphNode, 'id' | 'name' | 'kind'>): ViewEntry {
  * History mirroring: every browser-history entry stores a snapshot of the
  * whole navigation stack (ids + names + kinds). popstate rebuilds the stack
  * from the landed entry's snapshot, so Back/Forward stay correct even after
- * navigateToNode rebuilt the stack (search / portal / inspector jumps) —
+ * navigateToNode rebuilt the stack (search / portal / sidebar jumps) —
  * a depth-only scheme goes dead there. Viewports/selection are re-attached
  * from live entries (same index) or from a per-node cache.
  */
@@ -198,6 +273,9 @@ export const useAppStore = create<AppState>()((set, get) => {
 
   /** In-flight /api/node fetches, deduped per id. */
   const detailFetches = new Map<string, Promise<NodeDetailResponse | null>>();
+  const symbolFetches = new Map<string, Promise<SymbolsResponse | null>>();
+  const sourceFetches = new Map<string, Promise<SourceResponse | null>>();
+  const linkFetches = new Map<string, Promise<SourceLinksResponse | null>>();
   let treeFetching = false;
 
   /**
@@ -346,8 +424,14 @@ export const useAppStore = create<AppState>()((set, get) => {
     l5: null,
     nodeDetails: {},
     expandedIO: {},
+    sidebarTab: 'files',
+    detailCollapsed: {},
+    symbols: {},
+    sources: {},
+    sourceLinks: {},
     tree: null,
     treeError: null,
+    dataEpoch: 0,
     hoverId: null,
     pendingCenterId: null,
     paletteOpen: false,
@@ -430,8 +514,9 @@ export const useAppStore = create<AppState>()((set, get) => {
 
         if (opts?.landOnParent === true && parentEntry) {
           // Portal landing: the parent view IS the destination; center the
-          // target after layout.
-          set({ pendingCenterId: node.id });
+          // target after layout. This writes parentEntry.selectionId directly
+          // rather than going through select(), so the tab is set by hand.
+          set({ pendingCenterId: node.id, sidebarTab: 'details' });
           pushStack(stack);
           return;
         }
@@ -457,6 +542,11 @@ export const useAppStore = create<AppState>()((set, get) => {
 
     select: (id) => {
       patchTop({ selectionId: id });
+      // Selecting opens the details tab; deselecting falls back to Files.
+      // Sidebar.tsx re-derives this from the live selection, so a cluster
+      // pseudo-selection still lands on Files without a special case here
+      // (the store must not import from canvas/).
+      set({ sidebarTab: id === null ? 'files' : 'details' });
     },
 
     setHover: (id) => {
@@ -503,6 +593,70 @@ export const useAppStore = create<AppState>()((set, get) => {
       const open = get().expandedIO[id] === true;
       set((s) => ({ expandedIO: { ...s.expandedIO, [id]: !open } }));
       if (!open && !get().nodeDetails[id]) void get().ensureNodeDetail(id);
+    },
+
+    setSidebarTab: (tab) => {
+      set({ sidebarTab: tab });
+    },
+
+    toggleDetailSection: (id) => {
+      set((s) => ({
+        detailCollapsed: { ...s.detailCollapsed, [id]: s.detailCollapsed[id] !== true },
+      }));
+    },
+
+    ensureSymbols: async (id) => {
+      const cached = get().symbols[id];
+      if (cached) return cached;
+      const inFlight = symbolFetches.get(id);
+      if (inFlight) return inFlight;
+      const promise = fetchSymbols(id)
+        .then((res) => {
+          set((s) => ({ symbols: { ...s.symbols, [id]: res } }));
+          return res as SymbolsResponse | null;
+        })
+        .catch(() => null)
+        .finally(() => {
+          symbolFetches.delete(id);
+        });
+      symbolFetches.set(id, promise);
+      return promise;
+    },
+
+    ensureSource: async (id) => {
+      const cached = get().sources[id];
+      if (cached) return cached;
+      const inFlight = sourceFetches.get(id);
+      if (inFlight) return inFlight;
+      const promise = fetchSource(id)
+        .then((res) => {
+          set((s) => ({ sources: { ...s.sources, [id]: res } }));
+          return res as SourceResponse | null;
+        })
+        .catch(() => null)
+        .finally(() => {
+          sourceFetches.delete(id);
+        });
+      sourceFetches.set(id, promise);
+      return promise;
+    },
+
+    ensureSourceLinks: async (id) => {
+      const cached = get().sourceLinks[id];
+      if (cached) return cached;
+      const inFlight = linkFetches.get(id);
+      if (inFlight) return inFlight;
+      const promise = fetchSourceLinks(id)
+        .then((res) => {
+          set((s) => ({ sourceLinks: { ...s.sourceLinks, [id]: res } }));
+          return res as SourceLinksResponse | null;
+        })
+        .catch(() => null)
+        .finally(() => {
+          linkFetches.delete(id);
+        });
+      linkFetches.set(id, promise);
+      return promise;
     },
 
     ensureTree: async () => {
@@ -559,7 +713,23 @@ export const useAppStore = create<AppState>()((set, get) => {
 
     invalidate: async () => {
       detailFetches.clear();
-      set({ graphs: {}, l5: null, nodeDetails: {}, tree: null, treeError: null });
+      symbolFetches.clear();
+      sourceFetches.clear();
+      linkFetches.clear();
+      // sidebarTab / detailCollapsed deliberately survive: they are UI
+      // preferences, not indexed data.
+      set((s) => ({
+        graphs: {},
+        l5: null,
+        nodeDetails: {},
+        symbols: {},
+        sources: {},
+        sourceLinks: {},
+        tree: null,
+        treeError: null,
+        // Wakes the effects that fetch into the caches just emptied.
+        dataEpoch: s.dataEpoch + 1,
+      }));
       try {
         const meta = await fetchMeta();
         set({ meta });

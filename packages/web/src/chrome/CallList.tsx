@@ -2,7 +2,15 @@ import type { CallLink } from '@lsp-viz/core';
 import { kindGlyph } from '../canvas/glyphs';
 import { useAppStore } from '../state/store';
 
-/** Clickable caller/callee rows — shared by the inspector and the L5 view. */
+/**
+ * Clickable link rows — shared by the sidebar Details tab and L5.
+ *
+ * These are `CallLink`s by TYPE only. The list carries every edge kind
+ * `nodeLinks` resolves — `references`, `extends` and `implements` alongside
+ * `calls` — so the `empty` text its callers pass is deliberately written in
+ * link-neutral language ("uses", not "calls"): a constant nothing CALLS is
+ * still used by the function whose default parameter reads it.
+ */
 export function CallLinkList({ links, empty }: { links: readonly CallLink[]; empty: string }) {
   const navigateToNode = useAppStore((s) => s.navigateToNode);
   if (links.length === 0) {

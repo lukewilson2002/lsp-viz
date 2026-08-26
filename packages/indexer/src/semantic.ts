@@ -1,18 +1,26 @@
 /**
- * Semantic phase: LSP-driven symbol + call-graph extraction.
+ * Semantic phase: LSP-driven symbol, call-graph and reference extraction.
  *
- * Per file: didOpen → documentSymbol → symbol GraphNodes (deterministic ids),
- * then hover (signatures) and call hierarchy (calls edges) pipelined through a
- * bounded promise pool → didClose. Call targets in files not yet processed go
- * to a pending list retried once after all files complete. The phase survives
- * language-server crashes: a dead child is restarted and the file retried
- * (max 2 attempts per file).
+ * Sweep 1, per file: didOpen → documentSymbol → symbol GraphNodes (deterministic
+ * ids), then hover (signatures) and call hierarchy (calls edges) pipelined
+ * through a bounded promise pool → didClose. Call targets in files not yet
+ * processed go to a pending list retried once after all files complete.
+ *
+ * Sweep 2, per file: textDocument/references on every card-level declaration →
+ * `references` edges for uses that are not calls (a type annotation, a default
+ * parameter value, a const read). It is a SEPARATE sweep because the `calls`
+ * edge that would duplicate a reference pair is produced while crawling the
+ * caller's file, which may sort after the declaration's — dedup is only correct
+ * once every file's symbols and calls are stored.
+ *
+ * Both sweeps survive language-server crashes: a dead child is restarted and the
+ * file retried (max 2 attempts per file).
  */
 
 import { readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { isSymbolKind, nodeId } from '@lsp-viz/core';
-import type { GraphNode, GraphStore, NodeKind, Position, Range } from '@lsp-viz/core';
+import { edgeId, isSymbolKind, nodeId } from '@lsp-viz/core';
+import type { GraphEdge, GraphNode, GraphStore, NodeKind, Position, Range } from '@lsp-viz/core';
 import { DocumentSymbol } from 'vscode-languageserver-protocol';
 import type {
   DocumentSymbol as LspDocumentSymbol,
@@ -29,6 +37,14 @@ export interface SemanticContext {
   adapter: LanguageAdapter;
   /** Files (repo-relative, posix) still needing semantic analysis. */
   files: string[];
+  /**
+   * Files (repo-relative, posix) whose declarations get a reference sweep. On a
+   * diff run this is the import closure of the changed files, not just the
+   * changed files: a reference edge is PRODUCED while crawling the referent's
+   * file but OWNED (sourcePath) by the referrer's, so a changed referrer drops
+   * edges only its importees can recreate.
+   */
+  referenceFiles: string[];
   /** Max in-flight LSP requests. */
   concurrency: number;
   emit: (e: IndexProgressEvent) => void;
@@ -37,7 +53,11 @@ export interface SemanticContext {
 
 /** Test-only lifecycle hooks (crash-recovery tests observe/kill the child). */
 export interface SemanticTestHooks {
-  /** Called after each file finishes (success or give-up), with the live client. */
+  /**
+   * Called after each file finishes (success or give-up), with the live
+   * client. Fires once per file per SWEEP, so a file appears twice in a run
+   * that does both — a test counting invocations must expect that.
+   */
   onFileDone?: (file: string, client: LspClient) => void;
 }
 export const semanticTestHooks: SemanticTestHooks = {};
@@ -53,6 +73,15 @@ interface SymbolEntry {
   node: GraphNode;
   needsHover: boolean;
   needsCalls: boolean;
+}
+
+/** One (source symbol → referenced declaration) pair accumulated for a file. */
+interface RefPair {
+  fromId: string;
+  toId: string;
+  count: number;
+  /** File containing the SOURCE symbol — not necessarily the crawled file. */
+  sourcePath: string;
 }
 
 interface PendingCall {
@@ -230,6 +259,71 @@ function resolveAmongNodes(nodes: readonly GraphNode[], selStart: Position): str
   return best?.id ?? null;
 }
 
+/**
+ * The card a use site belongs to: the smallest symbol node containing `pos`,
+ * then climb out of anonymous nesting (inline callbacks, nested helpers) until
+ * the parent is the file node or a class/interface. That matches how call
+ * hierarchy already collapses `cells.map((c) => padCell(c))` onto `formatRow`,
+ * while stopping at a method instead of swallowing it into its class.
+ *
+ * Returns null when `pos` is inside no symbol at all — notably an
+ * `import { x } from '…'` specifier, which the graph already carries as an
+ * `imports` edge at file granularity; `references` is symbol → symbol.
+ *
+ * Every parent of a file's symbols lives in that same file's node set, so this
+ * needs no store lookups and is unit-testable without a language server.
+ */
+export function enclosingCardSymbol(
+  fileNodes: readonly GraphNode[],
+  pos: Position,
+): GraphNode | null {
+  let best: GraphNode | null = null;
+  for (const node of fileNodes) {
+    if (!isSymbolKind(node.kind)) continue;
+    if (!node.range || !rangeContains(node.range, pos)) continue;
+    if (best === null || rangeSize(node.range) < rangeSize(best.range as Range)) best = node;
+  }
+  if (best === null) return null;
+  const byId = new Map(fileNodes.map((n) => [n.id, n]));
+  for (;;) {
+    const parentId: string | null = best.parentId;
+    if (parentId === null) return best;
+    const parent = byId.get(parentId);
+    if (!parent || !isSymbolKind(parent.kind)) return best;
+    if (parent.kind === 'class' || parent.kind === 'interface') return best;
+    best = parent;
+  }
+}
+
+/**
+ * True when either id is a containment ancestor of the other. Kills the
+ * self-edges of recursion and of `class Vector2 { plus(): Vector2 }`. Both ids
+ * must belong to `fileNodes` (containment never crosses a file boundary below
+ * the file node, so a cross-file pair is related by construction: never).
+ */
+function isContainmentRelated(fileNodes: readonly GraphNode[], a: string, b: string): boolean {
+  const byId = new Map(fileNodes.map((n) => [n.id, n]));
+  const climbsTo = (from: string, target: string): boolean => {
+    let cur = byId.get(from);
+    while (cur && cur.parentId !== null) {
+      if (cur.parentId === target) return true;
+      cur = byId.get(cur.parentId);
+    }
+    return false;
+  };
+  return climbsTo(a, b) || climbsTo(b, a);
+}
+
+/** Swallow per-request server errors; only a dead process aborts the file. */
+async function guarded<T>(fn: () => Promise<T>): Promise<T | null> {
+  try {
+    return await fn();
+  } catch (error) {
+    if (error instanceof LspDeadError) throw error;
+    return null;
+  }
+}
+
 /** Bounded promise pool; the first worker error aborts scheduling and rethrows. */
 async function runPool<T>(
   items: readonly T[],
@@ -264,10 +358,11 @@ async function runPool<T>(
 
 export async function runSemanticPhase(
   ctx: SemanticContext,
-): Promise<{ symbols: number; callEdges: number }> {
-  const { repoRoot, store, adapter, files, concurrency, emit, isCancelled } = ctx;
+): Promise<{ symbols: number; callEdges: number; refEdges: number }> {
+  const { repoRoot, store, adapter, files, referenceFiles, concurrency, emit, isCancelled } = ctx;
   let totalSymbols = 0;
   let totalCallEdges = 0;
+  let totalRefEdges = 0;
 
   // Retry every persisted unresolved call target (this run's and leftovers
   // from interrupted earlier runs). Pure DB work — needs no language server.
@@ -292,9 +387,10 @@ export async function runSemanticPhase(
     if (resolvedIds.length > 0) store.deletePendingCalls(resolvedIds);
   };
 
-  if (files.length === 0) {
+  // A diff run can have nothing to re-crawl but still owe a reference sweep.
+  if (files.length === 0 && referenceFiles.length === 0) {
     resolveStoredPendings();
-    return { symbols: 0, callEdges: totalCallEdges };
+    return { symbols: 0, callEdges: totalCallEdges, refEdges: 0 };
   }
 
   const client = new LspClient(adapter, repoRoot, {
@@ -313,10 +409,12 @@ export async function runSemanticPhase(
     const message = error instanceof Error ? error.message : String(error);
     console.warn(`[indexer] semantic: failed to start ${adapter.id} language server: ${message}`);
     await client.dispose();
-    return { symbols: 0, callEdges: 0 };
+    return { symbols: 0, callEdges: 0, refEdges: 0 };
   }
 
-  const filesTotal = files.length;
+  // Both sweeps report into one counter: restarting at 0 for sweep 2 would make
+  // the status bar look like the semantic phase ran twice.
+  const filesTotal = files.length + referenceFiles.length;
   let filesDone = 0;
   /** First file on a fresh server retries empty results while it warms up. */
   let warmedUp = false;
@@ -402,16 +500,6 @@ export async function runSemanticPhase(
         return resolveAmongNodes(targetNodes(toPath), selStart);
       };
 
-      /** Swallow per-request server errors; only a dead process aborts the file. */
-      const guarded = async <T>(fn: () => Promise<T>): Promise<T | null> => {
-        try {
-          return await fn();
-        } catch (error) {
-          if (error instanceof LspDeadError) throw error;
-          return null;
-        }
-      };
-
       const tasks = entries.filter((e) => e.needsHover || e.needsCalls);
       await runPool(tasks, concurrency, async (entry) => {
         const sel = entry.node.selectionRange;
@@ -435,7 +523,7 @@ export async function runSemanticPhase(
             const count = Math.max(1, call.fromRanges.length); // 1 per call site
             const toId = resolveTarget(toPath, selStart);
             if (toId !== null) {
-              const key = `${entry.node.id} ${toId}`;
+              const key = `${entry.node.id}\u0000${toId}`;
               const existing = fileEdges.get(key);
               if (existing) existing.count += count;
               else fileEdges.set(key, { fromId: entry.node.id, toId, count });
@@ -496,15 +584,128 @@ export async function runSemanticPhase(
     }
   };
 
-  try {
-    for (const file of files) {
+  /**
+   * Sweep 2 for one file: `references` edges for this file's declarations.
+   *
+   * One request per DECLARATION (a few hundred on this repo) rather than one
+   * textDocument/definition per identifier (tens of thousands, plus a
+   * language-specific identifier query the adapter interface does not carry).
+   * References also answer with a URI, so cross-file uses work —
+   * documentHighlight has no URI field at all and could never do that.
+   */
+  const processReferenceFile = async (file: string): Promise<number> => {
+    const fileId = fileNodeId(file);
+    const nodesByPath = new Map<string, GraphNode[]>();
+    const nodesFor = (relPath: string): GraphNode[] => {
+      let nodes = nodesByPath.get(relPath);
+      if (nodes === undefined) {
+        nodes = store.getNodesByPath(relPath);
+        nodesByPath.set(relPath, nodes);
+      }
+      return nodes;
+    };
+
+    // Targets are exactly the cards an L4 file view draws, read from the store
+    // (sweep 1 already asked documentSymbol). Function-local variables would
+    // each emit a self-loop from their own enclosing function; class/interface
+    // members would turn one `new Vector2(...)` into both →constructor and
+    // →Vector2. Members stay valid SOURCES. Barrels declare nothing, so this
+    // also spares them a pointless didOpen round trip.
+    const decls = nodesFor(file).filter(
+      (n) => n.parentId === fileId && isSymbolKind(n.kind) && n.selectionRange !== undefined,
+    );
+    if (decls.length === 0) return 0;
+
+    const absPath = path.join(repoRoot, file);
+    const text = readFileSync(absPath, 'utf8');
+    // MANDATORY: tsserver answers a reference request for a closed document
+    // with [] rather than an error — silent data loss, not a failure.
+    await client.openDocument(file, text);
+    try {
+      // Same reason: a cold server also answers []. Warm it on the open file.
+      if (!warmedUp) {
+        for (let attempt = 0; attempt < WARMUP_RETRIES && !isCancelled(); attempt += 1) {
+          const probe = await client.documentSymbols(file);
+          if (probe !== null && probe.length > 0) break;
+          await delay(WARMUP_DELAY_MS);
+        }
+        warmedUp = true;
+      }
+
+      const pairs = new Map<string, RefPair>();
+      await runPool(decls, concurrency, async (decl) => {
+        if (isCancelled()) return;
+        const sel = decl.selectionRange as Range;
+        const locations = await guarded(() => client.references(file, sel.start, false));
+        for (const loc of locations ?? []) {
+          const usePath = uriToRepoRelative(loc.uri, repoRoot);
+          if (usePath === null) continue; // use site outside the repo
+          const useNodes = nodesFor(usePath);
+          if (useNodes.length === 0) continue; // skipped or failed file
+          const source = enclosingCardSymbol(useNodes, loc.range.start);
+          if (source === null || source.id === decl.id) continue;
+          if (usePath === file && isContainmentRelated(useNodes, source.id, decl.id)) continue;
+          const key = `${source.id}\u0000${decl.id}`;
+          const existing = pairs.get(key);
+          if (existing) existing.count += 1;
+          else {
+            pairs.set(key, {
+              fromId: source.id,
+              toId: decl.id,
+              count: 1,
+              sourcePath: source.path,
+            });
+          }
+        }
+      });
+      if (pairs.size === 0) return 0;
+
+      // A pair that already calls its target would get a dotted line painted
+      // exactly on top of the solid one. `calls` is the stronger fact; it wins.
+      const fromIds = [...new Set([...pairs.values()].map((p) => p.fromId))];
+      const callPairs = new Set(
+        store.getEdgesTouching(fromIds, ['calls']).map((e) => `${e.from}\u0000${e.to}`),
+      );
+      const edges: GraphEdge[] = [];
+      for (const [key, pair] of pairs) {
+        if (callPairs.has(key)) continue;
+        edges.push({
+          id: edgeId('references', pair.fromId, pair.toId),
+          kind: 'references',
+          from: pair.fromId,
+          to: pair.toId,
+          count: pair.count,
+          // CONTRACTS: sourcePath is the file containing the SOURCE symbol —
+          // which is not `file` for a cross-file reference.
+          sourcePath: pair.sourcePath,
+        });
+      }
+      // upsertEdges (absolute), never addEdge (accumulating): this edge is
+      // produced while crawling a file that is not its sourcePath, so
+      // deleteFileData has not cleared it first and addEdge would double every
+      // count on every diff run.
+      if (edges.length > 0) store.upsertEdges(edges);
+      return edges.length;
+    } finally {
+      try {
+        await client.closeDocument(file);
+      } catch {
+        // dead server; the crash path restarts it
+      }
+    }
+  };
+
+  /** Per-file driver shared by both sweeps: bounded retries, crash restart, progress. */
+  const processFilesWithRetry = async (
+    batch: readonly string[],
+    unit: (file: string) => Promise<void>,
+  ): Promise<void> => {
+    for (const file of batch) {
       if (isCancelled() || brokenBeyondRepair) break;
 
       for (let attempt = 1; attempt <= MAX_ATTEMPTS_PER_FILE; attempt += 1) {
         try {
-          const result = await processFile(file);
-          totalSymbols += result.symbols;
-          totalCallEdges += result.callEdges;
+          await unit(file);
           break;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -546,13 +747,31 @@ export async function runSemanticPhase(
       });
       semanticTestHooks.onFileDone?.(file, client);
     }
+  };
 
+  try {
+    await processFilesWithRetry(files, async (file) => {
+      const result = await processFile(file);
+      totalSymbols += result.symbols;
+      totalCallEdges += result.callEdges;
+    });
+
+    // BEFORE sweep 2, not after: a cross-file call whose target file sorted
+    // later is still sitting in pending_calls, and the reference sweep's
+    // calls-wins dedup reads the edges table. Draining it here is what stops
+    // every cross-package call from also getting a duplicate dotted edge.
     // Runs even when cancelled; rows that still don't resolve stay for the
     // next run.
     resolveStoredPendings();
+
+    // Only now is every file's symbol and call data stored, so the dedup
+    // inside the reference sweep sees the whole picture.
+    await processFilesWithRetry(referenceFiles, async (file) => {
+      totalRefEdges += await processReferenceFile(file);
+    });
   } finally {
     await client.dispose();
   }
 
-  return { symbols: totalSymbols, callEdges: totalCallEdges };
+  return { symbols: totalSymbols, callEdges: totalCallEdges, refEdges: totalRefEdges };
 }

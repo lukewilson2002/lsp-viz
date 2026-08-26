@@ -1,5 +1,5 @@
 /**
- * One shared Shiki highlighter for the whole app (inspector preview + L5
+ * One shared Shiki highlighter for the whole app (sidebar Details tab + L5
  * source). Lazily initialized via dynamic import so the shiki chunk never
  * blocks first paint; theme picked by prefers-color-scheme.
  *
@@ -8,6 +8,10 @@
  * synchronous `highlighter.codeToHtml(code, { lang, theme })`. The web bundle
  * (`shiki/bundle/web`) covers typescript/tsx + the github themes while
  * keeping dozens of unrelated grammar chunks out of the build output.
+ *
+ * Tokens are additionally tagged with `data-tok="skip"` where the text is a
+ * string body or a comment, so the source view can link identifiers without
+ * linking the word `mean` inside a string literal.
  */
 
 import { useEffect, useState } from 'react';
@@ -49,6 +53,18 @@ export function langFor(language: string, path: string): HighlightLang | null {
     : base;
 }
 
+/**
+ * Scopes whose text is prose, not code: string bodies, comments, and the
+ * quote/slash punctuation that delimits them. Matched against a token's
+ * INNERMOST scope only — a template literal's substitution carries the
+ * enclosing `string.template.ts` in its scope stack, so testing the whole
+ * stack would silently drop every identifier inside `${...}`.
+ */
+const SKIP_SCOPE = /^(string|comment)\b|^punctuation\.definition\.(string|comment)\b/;
+
+/** Marker consumed by the source view's identifier pass. */
+const SKIP_ATTR = 'data-tok';
+
 const LIGHT_QUERY = '(prefers-color-scheme: light)';
 
 /** Reactive prefers-color-scheme: light flag. */
@@ -83,6 +99,19 @@ export function useHighlightedHtml(text: string | null, lang: HighlightLang | nu
           highlighter.codeToHtml(text, {
             lang,
             theme: light ? 'github-light' : 'github-dark',
+            // Tells identifier linking where the code ISN'T: without it a data
+            // label `'mean'` and every JSDoc mention of a symbol become links.
+            includeExplanation: 'scopeName',
+            transformers: [
+              {
+                name: 'lsp-viz:mark-prose',
+                span(hast, _line, _col, _lineElement, token) {
+                  const scopes = token.explanation?.[0]?.scopes ?? [];
+                  const innermost = scopes[scopes.length - 1]?.scopeName ?? '';
+                  if (SKIP_SCOPE.test(innermost)) hast.properties[SKIP_ATTR] = 'skip';
+                },
+              },
+            ],
           }),
         );
       })

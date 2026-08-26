@@ -4,24 +4,14 @@ import { NodeCard } from './NodeCard';
 
 /** Workspace / package / directory card. */
 export function ContainerNode({ data, selected }: NodeProps<ContainerFlowNode>) {
-  const { node, direction, viewIn, viewOut } = data;
-  const symbolCount = node.attrs?.symbolCount;
+  const { node, direction, links } = data;
   return (
     <NodeCard
       variant="container"
       node={node}
       direction={direction}
       selected={selected}
-      viewIn={viewIn}
-      viewOut={viewOut}
-      title={node.path || node.name}
-      entryBadge={node.attrs?.entry ?? false}
-      summary={
-        <div className="node-card-sub">
-          {node.kind}
-          {symbolCount !== undefined ? ` · ${symbolCount} symbols` : ''}
-        </div>
-      }
+      links={links}
     />
   );
 }

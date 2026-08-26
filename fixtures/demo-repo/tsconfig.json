@@ -6,9 +6,14 @@
     "moduleResolution": "bundler",
     "baseUrl": ".",
     "paths": {
-      "@demo/*": ["packages/*/src"]
+      "@demo/*": [
+        "packages/*/src"
+      ]
     },
-    "noEmit": true
+    "noEmit": true,
+    "jsx": "react-jsx"
   },
-  "include": ["packages/*/src"]
+  "include": [
+    "packages/*/src"
+  ]
 }

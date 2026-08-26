@@ -28,11 +28,14 @@ Demo flow, 60 seconds:
 1. **L1 — Workspace.** The repo's packages, edges weighted by import count.
 2. **Double-click a package → L2.** Its directories, entry points badged.
 3. **Drill again → L3.** Files, with export summaries, wired by imports.
-4. **Drill into a file → L4.** Its declarations connected by *call* edges; calls that
-   leave the file appear as ghost **portal nodes** — double-click one to jump across
-   the codebase without ever grepping.
-5. **Drill into a function → L5.** Its highlighted source, flanked by clickable callers
-   and callees.
+4. **Drill into a file → L4.** Its declarations wired by how they actually use each
+   other: solid *call* edges and dotted *reference* edges — a type annotation, an
+   `extends` target or a constant read in a default parameter draws an arrow too, so a
+   declaration nothing calls is not stranded. Links that leave the file appear as ghost
+   **portal nodes** — double-click one to jump across the codebase without ever grepping.
+5. **Drill into a declaration → L5.** Its highlighted source, flanked by clickable
+   **Used by** / **Uses** columns. Identifiers in the source the graph can resolve are
+   links too, imported names on the first line included.
 6. **Back** (button, Backspace, or browser back) returns to the *exact* prior view —
    scroll, zoom, and selection preserved. **⌘K** fuzzy-searches every symbol.
 
@@ -44,15 +47,15 @@ packages/
   indexer/   two-layer extraction:
              A. structural — tree-sitter (WASM): files, imports/exports  → L1–L3 in seconds
              B. semantic   — LSP (typescript-language-server): symbols,
-                call hierarchy, hover signatures                         → L4/L5, streamed
+                call hierarchy, find-all-references, hover signatures    → L4/L5, streamed
   server/    Fastify HTTP + WebSocket API, serves the built frontend, CLI entry
   web/       React + React Flow canvas, ELK layered layout in a Web Worker,
              Shiki source views, zustand navigation stack
 ```
 
 * **One aggregation rule.** Fine-grained edges are computed once (file→file imports,
-  symbol→symbol calls); every coarser edge is a roll-up to the endpoints' lowest common
-  ancestor. Levels never get analyzed separately.
+  symbol→symbol calls and references); every coarser edge is a roll-up to the endpoints'
+  lowest common ancestor. Levels never get analyzed separately.
 * **Progressive indexing.** The structural layer lands first and the UI is usable
   immediately; call edges stream in over WebSocket as the LSP crawl proceeds. Results
   persist to SQLite (`~/.cache/lsp-viz/`), so reopening the same repo is instant, and
@@ -74,7 +77,7 @@ lsp-viz <path-to-repo> [--port 4977] [--no-open] [--db <path>] [--reindex]
 
 ```bash
 pnpm build            # build all packages (topological)
-pnpm test             # core + indexer test suites (vitest)
+pnpm test             # core + indexer + server test suites (vitest)
 pnpm typecheck        # strict TS across the monorepo
 pnpm --filter @lsp-viz/web dev   # frontend dev server (proxies /api and /ws to :4977)
 ```
