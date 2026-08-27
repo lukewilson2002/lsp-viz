@@ -2,9 +2,9 @@
 
 **Explore a codebase visually**
 
-<video src="media/lsp-viz-demo.mp4" controls muted playsinline width="880">
-  <a href="media/lsp-viz-demo.mp4">Watch the demo (2 min)</a>
-</video>
+Watch the demo (2 min):
+
+![Demo video showcasing the app as it views its own source code.](media/lsp-viz-demo.mp4)
 
 Point lsp-viz at a repo and it builds an interactive, infinitely-nestable graph of the
 code, modeled on [C4 diagram](https://c4model.com/) zoom levels: every view answers one
