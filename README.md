@@ -15,7 +15,7 @@ Semantic analysis flows through the Language Server Protocol, so new languages a
 by registering a language server — not by writing new analysis code. TypeScript is the only
 adapter currently.
 
-## Try it yourself
+## Try It Yourself
 
 ### From source
 
