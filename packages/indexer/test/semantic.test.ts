@@ -32,6 +32,9 @@ describe('semantic (LSP) indexing of fixtures/demo-repo', () => {
     expect(mean).toBeDefined();
     expect(mean!.signature).toBeDefined();
     expect(mean!.signature).toContain('mean');
+    // tsserver hovers this as a bare `function mean(...)`; the `export` is
+    // read back from the source (see withSourceModifiers).
+    expect(mean!.signature).toMatch(/^export function mean\b/);
     expect(mean!.range).toBeDefined();
     expect(mean!.selectionRange).toBeDefined();
     expect(mean!.attrs?.loc).toBeGreaterThan(1);

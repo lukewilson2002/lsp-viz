@@ -15,6 +15,7 @@
 import type { GraphNode, NodeDetailResponse } from '@lsp-viz/core';
 import { useEffect, useState } from 'react';
 import { kindGlyph } from '../canvas/glyphs';
+import { CodeSignature } from '../code/CodeSignature';
 import { SourceView } from '../code/SourceView';
 import { useCodeLinks } from '../code/useCodeLinks';
 import { isContainerKind } from '../levels';
@@ -151,6 +152,18 @@ export function DetailsPane({ nodeId }: { nodeId: string }) {
 
   const node = detail?.node ?? null;
 
+  // The Source section below prints the declaration in full, opening with the
+  // very text the signature carries — showing both puts the same code on
+  // screen twice, one above the other. The signature stays as the FALLBACK
+  // for what Source cannot cover: a container (no single file behind it) and
+  // a file that is no longer on disk. It is suppressed while source is still
+  // loading too, so the pane does not flash a duplicate on every selection.
+  //
+  // What this does cost: a hover signature carries INFERRED types the source
+  // text never spells out (a function with no written return type still
+  // hovers as `: Promise<void>`). The node cards remain the surface for that.
+  const sourceWillRender = node !== null && !isContainerKind(node.kind) && !sourceFailed;
+
   return (
     <div className="sidebar-details">
       <header className="detail-identity">
@@ -183,8 +196,14 @@ export function DetailsPane({ nodeId }: { nodeId: string }) {
             return line === '' ? null : <div className="detail-metrics">{line}</div>;
           })()
         ) : null}
-        {node?.signature !== undefined && node.signature !== '' ? (
-          <div className="detail-signature">{node.signature}</div>
+        {node !== null && !sourceWillRender && node.signature !== undefined && node.signature !== '' ? (
+          <CodeSignature
+            className="detail-signature"
+            signature={node.signature}
+            language={node.language}
+            path={node.path}
+            links={links}
+          />
         ) : null}
       </header>
 

@@ -28,8 +28,15 @@ export interface CardRows {
   signature: string | null;
   /** Already formatted/trimmed for display (see formatCardPath). */
   path: string | null;
-  /** Always non-empty — the kind is always known. */
-  facts: string;
+  /**
+   * Metrics the other rows don't already carry; null drops the row.
+   *
+   * Symbol cards have none: the kind is the glyph and the signature, and the
+   * line count is the span already printed on the path row. Saying
+   * `function · 13 loc` under `ƒ foo` / `foo.ts:5-17` is three restatements
+   * of two facts.
+   */
+  facts: string | null;
   /** Files with attrs.exportedNames.length > 0; null otherwise. */
   exports: string | null;
 }
@@ -83,8 +90,14 @@ export function formatCardPath(node: GraphNode): string | null {
       // The basename is already the card's name — repeating it wastes the row.
       return dir === '' ? './' : trimSegments(dir);
     }
-    case 'symbol':
-      return `${basename(node.path)}:${(node.range?.start.line ?? 0) + 1}`;
+    case 'symbol': {
+      // `file.ts:5-17` — the editor/ripgrep convention for a line RANGE, and
+      // the reason the card needs no separate `13 loc` row: the span is the
+      // line count, stated where you'd look up the location anyway.
+      const start = (node.range?.start.line ?? 0) + 1;
+      const end = (node.range?.end.line ?? node.range?.start.line ?? 0) + 1;
+      return `${basename(node.path)}:${start}${end > start ? `-${end}` : ''}`;
+    }
   }
 }
 
@@ -93,7 +106,8 @@ export function cardRows(node: GraphNode): CardRows {
   const attrs = node.attrs;
   const signature = node.signature !== undefined && node.signature !== '' ? node.signature : null;
 
-  const parts: string[] = [node.kind];
+  // Symbols get no facts row at all (see CardRows.facts).
+  const parts: string[] = variant === 'symbol' ? [] : [node.kind];
   if (variant === 'container') {
     // attrs.symbolCount is a DESCENDANT NODE count (dirs + files + symbols),
     // not a symbol count — say "items", not "symbols".
@@ -103,8 +117,6 @@ export function cardRows(node: GraphNode): CardRows {
     if (attrs?.exportCount !== undefined) {
       parts.push(`${attrs.exportCount} export${attrs.exportCount === 1 ? '' : 's'}`);
     }
-  } else {
-    if (attrs?.loc !== undefined) parts.push(`${attrs.loc} loc`);
   }
 
   let exports: string | null = null;
@@ -123,7 +135,7 @@ export function cardRows(node: GraphNode): CardRows {
     entry: attrs?.entry === true,
     signature: variant === 'symbol' ? signature : null,
     path: formatCardPath(node),
-    facts: parts.join(' · '),
+    facts: parts.length > 0 ? parts.join(' · ') : null,
     exports,
   };
 }

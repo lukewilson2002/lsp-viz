@@ -16,7 +16,7 @@
 
 import type { GraphNode, LinkCounts } from '@lsp-viz/core';
 import type { Edge, Node } from '@xyflow/react';
-import type { LayoutDirection } from '../layout/messages';
+import type { LayoutDirection, LayoutPoint } from '../layout/messages';
 import { cardRows, formatCardPath } from './cardModel';
 import type { CardRows } from './cardModel';
 
@@ -51,7 +51,11 @@ export type PortalNodeData = {
   groupNames?: string[];
 };
 
-/** Data for the synthetic "+N more" cluster node. */
+/**
+ * Data for the two synthetic count-only nodes: the "+N more" LOD cluster and
+ * the collapsed portal ghost. Same shape, different node types — what each
+ * count MEANS (hidden children vs. external symbols) is the component's.
+ */
 export type ClusterNodeData = {
   count: number;
   direction: LayoutDirection;
@@ -62,20 +66,55 @@ export type FileFlowNode = Node<CanvasNodeData, 'file'>;
 export type SymbolFlowNode = Node<CanvasNodeData, 'symbol'>;
 export type PortalFlowNode = Node<PortalNodeData, 'portal'>;
 export type ClusterFlowNode = Node<ClusterNodeData, 'cluster'>;
+export type PortalClusterFlowNode = Node<ClusterNodeData, 'portalCluster'>;
 
 export type AppNode =
   | ContainerFlowNode
   | FileFlowNode
   | SymbolFlowNode
   | PortalFlowNode
-  | ClusterFlowNode;
-export type AppEdge = Edge;
+  | ClusterFlowNode
+  | PortalClusterFlowNode;
+
+/**
+ * Every edge on the canvas is a `RoutedEdge`. `points` is ELK's own route for
+ * it, in the same coordinate space as the node positions; absent when ELK
+ * returned no sections for the edge, in which case the component falls back to
+ * the smoothstep that was drawn before routes were read back.
+ */
+export type RoutedEdgeData = {
+  points?: LayoutPoint[];
+};
+
+export type RoutedFlowEdge = Edge<RoutedEdgeData, 'routed'>;
+export type AppEdge = RoutedFlowEdge;
 
 /** Synthetic id of the single "+N more" LOD cluster node. */
 export const CLUSTER_NODE_ID = '__lsp_viz_cluster__';
 
+/** Synthetic id of the single collapsed "N external symbols" ghost. */
+export const PORTAL_CLUSTER_NODE_ID = '__lsp_viz_portal_cluster__';
+
+/** True for the synthetic nodes — the ones with no graph node behind them. */
+export function isSyntheticNodeId(id: string): boolean {
+  return id === CLUSTER_NODE_ID || id === PORTAL_CLUSTER_NODE_ID;
+}
+
 /** Max nodes rendered per view before the smallest collapse into a cluster. */
 export const LOD_MAX_VISIBLE = 50;
+
+/**
+ * Max ghost nodes drawn before they collapse into one counted ghost.
+ *
+ * Ghosts are CONTEXT — "this is used from outside" — and a file used by forty
+ * unrelated callers was rendering forty of them: a wall down one side of the
+ * view, none of it about the file being looked at, and (because ghosts and
+ * cards share one node budget) it also pushed the file's own declarations
+ * into "+N more". Past this many, one ghost states the count and the view
+ * goes back to being about its own contents; double-click still expands them
+ * all. Twelve is roughly what fits beside a view without dominating it.
+ */
+export const PORTAL_MAX_VISIBLE = 12;
 
 export interface NodeDimensions {
   width: number;
@@ -102,6 +141,14 @@ export interface IOExpansion {
 
 const CARD_PAD_X = 10; // .node-card padding-inline
 const CARD_PAD_Y = 8; // .node-card padding-block (each side)
+/**
+ * .node-card border, top + bottom. `box-sizing: border-box` is global, so the
+ * height React Flow applies INCLUDES these two pixels — leave them out and
+ * every card is 2px short of its own rows. Flex then takes those 2px from the
+ * one row that can give (the signature, the only `overflow: hidden` child),
+ * which reads as a clipped last line on a card that measures correctly.
+ */
+const CARD_BORDER = 2;
 const GLYPH_W = 11; // .node-card-head .kind-glyph width (flex: none)
 const HEAD_GAP = 6; // .node-card-head gap
 const ENTRY_BADGE_W = 46; // .entry-badge pill (~40px) + 6px gap
@@ -112,9 +159,15 @@ const NAME_MAX_LINES = 2; // == -webkit-line-clamp
 const SIG_MARGIN = 3; // .node-card-signature margin-top
 const SIG_BOX_PAD_Y = 6; // padding 2px x2 + border 1px x2
 const SIG_BOX_PAD_X = 12; // padding 5px x2 + border 1px x2
-const SIG_CHAR_PX = 6.0; // 10px mono advance
-const SIG_LINE = 14; // .node-card-signature line-height
-const SIG_MAX_LINES = 2; // == -webkit-line-clamp
+const SIG_CHAR_PX = 6.2; // 10px mono advance (measured 6.15 — round UP)
+const SIG_LINE = 13; // .node-card-signature line-height
+/**
+ * == -webkit-line-clamp. Two lines cut nearly every real signature in half —
+ * a return type is the last thing on the line and the first thing lost. Six
+ * at 9.5px shows a ~280-character declaration whole, which covers all but the
+ * most generic-heavy ones, and a card only pays for the lines it uses.
+ */
+const SIG_MAX_LINES = 6;
 const PATH_ROW = 16; // margin-top 2 + line-height 14
 const FACTS_ROW = 15; // margin-top 2 + line-height 13
 const EXPORTS_ROW = 15; // margin-top 2 + line-height 13
@@ -145,14 +198,53 @@ function nameLineCount(rows: CardRows, width: number): number {
   return Math.min(NAME_MAX_LINES, Math.max(1, Math.ceil((nameW + NAME_SAFETY) / nameBox)));
 }
 
+/**
+ * Lines one hard line of text wraps to in a box `perLine` characters wide.
+ *
+ * Greedy, word by word, because that is what the browser does: `length /
+ * perLine` assumes text packs perfectly to the right edge, and real wrapped
+ * text does not — every line ends early at the last word that fit. On a
+ * 25-character box, `(method) HubCache.compactNode(node: ICachedNode):
+ * ICompactNode` takes four lines, not the three that division predicts, and
+ * a signature short by one line is a signature with its return type cut off.
+ *
+ * `overflow-wrap: anywhere` is the second case: a word longer than the whole
+ * box is split across lines rather than overflowing.
+ */
+function wrappedLineCount(text: string, perLine: number): number {
+  let lines = 1;
+  let used = 0;
+  // Trailing space stays with its word — a break opportunity is AFTER a space.
+  for (const word of text.split(/(?<=\s)/)) {
+    if (used + word.length <= perLine) {
+      used += word.length;
+      continue;
+    }
+    if (used > 0) {
+      lines++;
+      used = 0;
+    }
+    if (word.length <= perLine) {
+      used = word.length;
+      continue;
+    }
+    const overflowLines = Math.ceil(word.length / perLine) - 1;
+    lines += overflowLines;
+    used = word.length - overflowLines * perLine;
+  }
+  return lines;
+}
+
 function signatureLineCount(signature: string, width: number): number {
   const box = Math.max(40, width - CARD_PAD_X * 2 - SIG_BOX_PAD_X);
   const perLine = Math.max(8, Math.floor(box / SIG_CHAR_PX));
-  // white-space: pre-wrap keeps explicit newlines — count them or a two-line
-  // signature that fits on one line by width would be under-reserved.
-  let newlines = 0;
-  for (const ch of signature) if (ch === '\n') newlines++;
-  return Math.min(SIG_MAX_LINES, Math.max(newlines + 1, Math.ceil(signature.length / perLine)));
+  // white-space: pre-wrap keeps explicit newlines, so wrapping is counted
+  // PER hard line: taking the max of the two (as this did while the clamp was
+  // 2) under-reserves a signature that both breaks and wraps, and an
+  // under-reserved row is a clipped one.
+  let lines = 0;
+  for (const line of signature.split('\n')) lines += wrappedLineCount(line, perLine);
+  return Math.min(SIG_MAX_LINES, Math.max(1, lines));
 }
 
 function cardWidth(rows: CardRows, scale: number): number {
@@ -163,13 +255,13 @@ function cardWidth(rows: CardRows, scale: number): number {
 }
 
 function collapsedHeight(rows: CardRows, width: number): number {
-  let h = CARD_PAD_Y * 2;
+  let h = CARD_PAD_Y * 2 + CARD_BORDER;
   h += nameLineCount(rows, width) * NAME_LINE;
   if (rows.signature !== null) {
     h += SIG_MARGIN + SIG_BOX_PAD_Y + signatureLineCount(rows.signature, width) * SIG_LINE;
   }
   if (rows.path !== null) h += PATH_ROW;
-  h += FACTS_ROW;
+  if (rows.facts !== null) h += FACTS_ROW;
   if (rows.exports !== null) h += EXPORTS_ROW;
   h += LINKS_ROW;
   return h;
@@ -236,4 +328,9 @@ export function portalDimensions(node: GraphNode, groupCount?: number): NodeDime
 
 export function clusterDimensions(): NodeDimensions {
   return { width: 156, height: 52 };
+}
+
+/** Wider than the LOD cluster: it carries a count AND what the count is of. */
+export function portalClusterDimensions(): NodeDimensions {
+  return { width: 200, height: 56 };
 }

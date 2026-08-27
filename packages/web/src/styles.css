@@ -582,8 +582,11 @@ html[data-desktop] .breadcrumb input {
   opacity: 0.9;
 }
 
-/* Signature block on symbol cards, clamped to two lines (the sidebar shows it
-   unclamped — the clamp exists only because ELK needs a bounded height). */
+/* Signature block on symbol cards: real, highlighted, clickable code (see
+   code/CodeSignature.tsx), clamped to SIG_MAX_LINES lines. The sidebar shows
+   it unclamped — the clamp exists only because ELK needs a bounded height,
+   and the smaller face buys three more lines inside the same box.
+   Geometry mirrors SIG_* in canvas/types.ts. */
 .node-card-signature {
   margin-top: 3px;
   padding: 2px 5px;
@@ -591,16 +594,26 @@ html[data-desktop] .breadcrumb input {
   border-radius: var(--radius-sm);
   background: var(--bg-panel);
   font-family: var(--font-mono);
+  /* 10px: the size every other descriptive row on the card uses
+     (.node-card-path, -facts, -exports). A code block set smaller than the
+     prose around it reads as a footnote, and this is the densest, most
+     information-bearing line on the card. */
   font-size: 10px;
-  line-height: 14px;
+  line-height: 13px;
   color: var(--text-dim);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
+  -webkit-line-clamp: 6;
+  line-clamp: 6;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+/* Shiki emits one span per line; inside a clamped box they must not become
+   blocks, or every line would also break the -webkit-box flow. */
+.node-card-signature .line {
+  display: inline;
 }
 
 /* -------- links row + expandable panel --------
@@ -710,15 +723,18 @@ html[data-desktop] .breadcrumb input {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text);
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* As in .call-path: the filename gives way before the symbol name does. */
 .node-io-file {
-  margin-left: auto;
-  flex: none;
-  max-width: 45%;
+  flex: 1 1 0;
+  text-align: right;
+  min-width: 0;
   font-family: var(--font-mono);
   font-size: 9.5px;
   color: var(--text-faint);
@@ -789,22 +805,34 @@ html[data-desktop] .breadcrumb input {
 }
 
 .function-view-signature {
+  display: block;
   font-family: var(--font-mono);
   font-size: 12.5px;
+  line-height: 1.5;
   color: var(--text);
   background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 10px 12px;
-  margin-bottom: 16px;
+  margin: 0 0 16px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
+.function-view-signature .line {
+  display: inline;
+}
+
+/* Three columns, two drag handles, and `minmax(0, …)` on every track.
+ *
+ * The `minmax(0, …)` is the whole fix for the squeezed source column: a grid
+ * track's default minimum is min-content, so ONE long symbol name in an
+ * un-shrinkable `.call-name` set a floor the link columns never gave back and
+ * the middle column paid for it. The fractions themselves live in
+ * views/columnWidths.ts and are written here as --l5-columns on drag. */
 .function-view-columns {
   display: grid;
-  grid-template-columns: 1fr 2fr 1fr;
-  gap: 14px;
+  grid-template-columns: var(--l5-columns, minmax(0, 1fr) 10px minmax(0, 1.35fr) 10px minmax(0, 1fr));
   align-items: start;
 }
 
@@ -814,6 +842,34 @@ html[data-desktop] .breadcrumb input {
   border-radius: var(--radius);
   padding: 10px 12px;
   min-height: 120px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* The handle IS the gutter — a grid track of its own, so dragging it moves a
+   real boundary rather than overlaying one. */
+.column-divider {
+  align-self: stretch;
+  min-height: 120px;
+  cursor: col-resize;
+  position: relative;
+}
+
+.column-divider::after {
+  content: '';
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-0.5px);
+  background: var(--border);
+  transition: background 120ms ease;
+}
+
+.column-divider:hover::after {
+  background: var(--accent-border);
+  width: 2px;
 }
 
 .function-view-panel h3 {
@@ -957,10 +1013,30 @@ html[data-desktop] .breadcrumb input {
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
+/* Stands for ghosts, so it looks like one — stacked, and quieter than the
+   solid "+N more" that hides the view's own children. */
+.cluster-node--portal {
+  border-style: dashed;
+  border-width: 1px;
+  box-shadow:
+    3px 3px 0 -1px var(--bg),
+    3px 3px 0 0 var(--card-border);
+  opacity: 0.9;
+}
+
+.cluster-node--portal .cluster-count {
+  color: var(--text-dim);
+}
+
 .cluster-count {
   font-weight: 600;
   font-size: 12.5px;
   color: var(--text-dim);
+  max-width: 100%;
+  padding: 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cluster-hint {
@@ -1311,13 +1387,33 @@ body.sidebar-resizing .react-flow {
   color: var(--text);
 }
 
+/* A disclosure triangle is a CONTROL, so it has to read as one and be worth
+   aiming at. As a character it was neither: U+25B8/U+25BE are Unicode's SMALL
+   triangles and stay a speck at any font-size the row can afford (see
+   DisclosureChevron). This is the box; the mark inside it is drawn. */
 .tree-chevron {
   flex: none;
-  width: 13px;
-  font-size: 9px;
-  color: var(--text-faint);
-  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* 19px is the tree row's content height, so the hit target is as large as it
+     can be without the row growing around it. The drawn mark is deliberately
+     smaller than this box — the box is for the pointer, not the eye. */
+  width: 19px;
+  height: 19px;
+  color: var(--text-dim);
   cursor: pointer;
+}
+
+.chevron-svg {
+  width: 12px;
+  height: 12px;
+  transition: transform 120ms ease;
+}
+
+/* One drawn shape, rotated — so expanding and collapsing animate. */
+.tree-chevron--open .chevron-svg {
+  transform: rotate(90deg);
 }
 
 .tree-chevron:not(.tree-chevron--leaf):hover {
@@ -1356,12 +1452,21 @@ body.sidebar-resizing .react-flow {
   background: var(--bg-elevated);
 }
 
+/* Shrink order is the point here: the symbol NAME answers "what uses this",
+   the path only says where it lives — so the path gives way first, and the
+   name is clipped only once the path is gone.
+   Proportional shrink cannot express that: with both sides shrinkable the
+   name still absorbs its share of the deficit, and one sub-pixel of it is
+   enough to trigger the ellipsis on a name that all but fits. `flex: 1 1 0`
+   on the path (below) takes the path OUT of the overflow calculation — it
+   contributes nothing to the row's hypothetical width and only ever fills
+   what the name leaves over. */
 .call-name {
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text);
-  flex: none;
-  max-width: 55%;
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1377,10 +1482,12 @@ body.sidebar-resizing .react-flow {
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--text-faint);
+  flex: 1 1 0;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  margin-left: auto;
+  text-align: right;
 }
 
 .call-empty {
@@ -1498,6 +1605,24 @@ body.sidebar-resizing .react-flow {
   list-style: none;
 }
 
+/* ------------------------------------------------------------- view kind */
+
+/* Top-left of the canvas, mirroring the legend chip's inset at the bottom.
+   Bare text, deliberately unboxed: it labels the level rather than pointing at
+   anything, and a chip here would read as another control on a surface that is
+   already all cards. Colour alone is enough to hold it apart from the grid. */
+.view-kind {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  z-index: 15;
+  /* 13px — the size the breadcrumb header runs at (inherited from body). */
+  font-size: 13px;
+  color: var(--text-faint);
+  user-select: none;
+  pointer-events: none;
+}
+
 /* ---------------------------------------------------------------- legend */
 
 .legend-chip {
@@ -1601,6 +1726,20 @@ body.sidebar-resizing .react-flow {
 
 .source-view {
   font-family: var(--font-mono);
+}
+
+/* Every surface that renders real file text has to agree on what a TAB is
+   worth. Left alone the browser renders one at 8 columns — a tab-indented
+   file then reads as double-indented, and a nested block runs off the right
+   edge of a column that would otherwise have fit it. 4 is the editor default
+   the files themselves are written against. */
+.source-view pre,
+.source-view code,
+.node-card-signature,
+.function-view-signature,
+.detail-signature {
+  tab-size: 4;
+  -moz-tab-size: 4;
 }
 
 .source-view pre {
@@ -1738,6 +1877,7 @@ body.sidebar-resizing .react-flow {
 /* Unclamped, unlike the card's two-line box — that clamp exists only because
    ELK has to know the card's height in advance. */
 .detail-signature {
+  display: block;
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-dim);
@@ -1747,6 +1887,10 @@ body.sidebar-resizing .react-flow {
   padding: 4px 6px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.detail-signature .line {
+  display: inline;
 }
 
 .detail-section {
@@ -1772,12 +1916,10 @@ body.sidebar-resizing .react-flow {
   color: var(--text);
 }
 
+/* Same control as the tree's (it carries .tree-chevron too) — only quieter,
+   since a section header is chrome and a tree row is content. */
 .detail-section-chevron {
-  flex: none;
-  width: 13px;
-  font-size: 9px;
   color: var(--text-faint);
-  text-align: center;
 }
 
 .detail-section-count {

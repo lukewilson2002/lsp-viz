@@ -14,15 +14,21 @@ import {
   useReactFlow,
   useStore as useFlowStore,
 } from '@xyflow/react';
-import type { NodeChange, NodeTypes } from '@xyflow/react';
+import type { EdgeTypes, NodeChange, NodeTypes } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { isEditableTarget } from '../keys';
-import type { LayoutDirection, LayoutEdgeInput, LayoutNodeInput } from '../layout/messages';
+import type {
+  LayoutDirection,
+  LayoutEdgeInput,
+  LayoutNodeInput,
+  LayoutPoint,
+} from '../layout/messages';
 import { useLayout } from '../layout/useLayout';
 import { selectCurrentGraph, selectTopEntry, useAppStore } from '../state/store';
 import type { ViewEntry } from '../state/store';
 import { cardVariantForKind } from './cardModel';
-import { ClusterNode } from './nodes/ClusterNode';
+import { RoutedEdge } from './edges/RoutedEdge';
+import { ClusterNode, PortalClusterNode } from './nodes/ClusterNode';
 import { ContainerNode } from './nodes/ContainerNode';
 import { FileNode } from './nodes/FileNode';
 import { PortalNode } from './nodes/PortalNode';
@@ -30,8 +36,11 @@ import { SymbolNode } from './nodes/SymbolNode';
 import {
   CLUSTER_NODE_ID,
   LOD_MAX_VISIBLE,
+  PORTAL_CLUSTER_NODE_ID,
+  PORTAL_MAX_VISIBLE,
   clusterDimensions,
   nodeDimensions,
+  portalClusterDimensions,
   portalDimensions,
 } from './types';
 import type { AppEdge, AppNode, IOExpansion } from './types';
@@ -42,7 +51,20 @@ const nodeTypes: NodeTypes = {
   symbol: SymbolNode,
   portal: PortalNode,
   cluster: ClusterNode,
+  portalCluster: PortalClusterNode,
 };
+
+/**
+ * One edge type for everything: `RoutedEdge` draws ELK's own obstacle-avoiding
+ * route, and falls back to the previous smoothstep for any edge ELK gave no
+ * route for.
+ */
+const edgeTypes: EdgeTypes = {
+  routed: RoutedEdge,
+};
+
+/** Shared empty map so a route-less render doesn't churn the edge memo. */
+const NO_ROUTES: ReadonlyMap<string, LayoutPoint[]> = new Map();
 
 const EDGE_DASH: Partial<Record<EdgeKind, string>> = {
   imports: '7 5',
@@ -75,6 +97,8 @@ interface ViewModel {
   portals: DisplayPortal[];
   /** How many children collapsed into the "+N more" node (0 = none). */
   clusterCount: number;
+  /** How many external SYMBOLS collapsed into the one ghost (0 = none). */
+  portalCount: number;
   edges: DisplayEdge[];
 }
 
@@ -147,19 +171,45 @@ function rollUpPortals(
  * The cap is on RENDERED nodes, not on children: a ghost occupies the same
  * canvas and the same layout layer as a card, so counting only cards let a
  * 14-declaration file draw 46 nodes and fall below the label threshold. Ghosts
- * roll up first (they are context, not content); only then do the smallest
- * children collapse into "+N more".
+ * give way FIRST, in two steps — roll up onto shared parents, then collapse
+ * wholesale past PORTAL_MAX_VISIBLE — because they are context, not content:
+ * a view must not lose its own declarations to the crowd around it. Only then
+ * do the smallest children collapse into "+N more".
  */
 function buildViewModel(
   graph: GraphViewResponse,
   showAll: boolean,
+  showPortals: boolean,
   keepId: string | null,
 ): ViewModel {
   const { portals, remap } = rollUpPortals(graph, keepId);
 
+  // Ghost overflow: past the cap they all collapse into one counted ghost.
+  // All of them, not a top-N — a partial wall is still a wall, and any cut-off
+  // would have to justify why THESE twelve callers are the interesting ones.
+  // The node a navigation just landed on is the one exception; it has to stay
+  // on screen as itself for the canvas to centre and select it.
+  const collapsedGhostIds = new Set<string>();
+  let portalCount = 0;
+  let shownPortals = portals;
+  if (!showPortals && portals.length > PORTAL_MAX_VISIBLE) {
+    shownPortals = [];
+    for (const portal of portals) {
+      if (portal.node.id === keepId) {
+        shownPortals.push(portal);
+        continue;
+      }
+      collapsedGhostIds.add(portal.node.id);
+      // Count SYMBOLS, not ghosts: a roll-up ghost stands for several, and
+      // "6 symbols" collapsing to "1" would be a lie about what's hidden.
+      portalCount += portal.groupNames?.length ?? 1;
+    }
+  }
+  const ghostSlots = shownPortals.length + (portalCount > 0 ? 1 : 0);
+
   let visible = graph.children;
   const clustered = new Set<string>();
-  const childBudget = Math.max(1, LOD_MAX_VISIBLE - portals.length);
+  const childBudget = Math.max(1, LOD_MAX_VISIBLE - ghostSlots);
   if (!showAll && graph.children.length > childBudget) {
     const sorted = [...graph.children].sort((a, b) => nodeWeight(b) - nodeWeight(a));
     const keep = new Set(sorted.slice(0, childBudget - 1).map((n) => n.id));
@@ -181,8 +231,13 @@ function buildViewModel(
 
   const childIds = new Set(graph.children.map((c) => c.id));
   const portalIds = new Set(graph.externalNodes.map((n) => n.id));
-  const mapEnd = (id: string): string =>
-    clustered.has(id) ? CLUSTER_NODE_ID : (remap.get(id) ?? id);
+  const mapEnd = (id: string): string => {
+    if (clustered.has(id)) return CLUSTER_NODE_ID;
+    // Roll-up first, THEN collapse: an external symbol reaches the collapsed
+    // ghost through whichever parent ghost adopted it.
+    const ghost = remap.get(id) ?? id;
+    return collapsedGhostIds.has(ghost) ? PORTAL_CLUSTER_NODE_ID : ghost;
+  };
 
   const merged = new Map<string, DisplayEdge>();
   const addEdge = (edge: { id: string; kind: EdgeKind; from: string; to: string; count: number }, portal: boolean): void => {
@@ -220,8 +275,9 @@ function buildViewModel(
 
   return {
     visible,
-    portals,
+    portals: shownPortals,
     clusterCount: clustered.size,
+    portalCount,
     edges: [...merged.values()],
   };
 }
@@ -324,6 +380,7 @@ function GraphCanvasInner() {
   const graphLoading = useAppStore((s) => s.graphLoading);
   const graphError = useAppStore((s) => s.graphError);
   const showAll = useAppStore((s) => selectTopEntry(s)?.showAll ?? false);
+  const showPortals = useAppStore((s) => selectTopEntry(s)?.showPortals ?? false);
   const selectionId = useAppStore((s) => selectTopEntry(s)?.selectionId ?? null);
   const hoverId = useAppStore((s) => s.hoverId);
   const metaIndexing = useAppStore((s) => s.meta?.indexing ?? false);
@@ -332,6 +389,7 @@ function GraphCanvasInner() {
   const drillInto = useAppStore((s) => s.drillInto);
   const navigateToNode = useAppStore((s) => s.navigateToNode);
   const setShowAll = useAppStore((s) => s.setShowAll);
+  const setShowPortals = useAppStore((s) => s.setShowPortals);
   const setHover = useAppStore((s) => s.setHover);
   const saveViewport = useAppStore((s) => s.saveViewport);
 
@@ -347,8 +405,8 @@ function GraphCanvasInner() {
   );
 
   const model = useMemo<ViewModel | null>(
-    () => (graph ? buildViewModel(graph, showAll, mountSelectionId) : null),
-    [graph, showAll, mountSelectionId],
+    () => (graph ? buildViewModel(graph, showAll, showPortals, mountSelectionId) : null),
+    [graph, showAll, showPortals, mountSelectionId],
   );
 
   // Expansion signature: relayout only when an expansion (or its row counts)
@@ -383,6 +441,9 @@ function GraphCanvasInner() {
         ...portalDimensions(p.node, p.groupNames?.length),
       })),
       ...(model.clusterCount > 0 ? [{ id: CLUSTER_NODE_ID, ...clusterDimensions() }] : []),
+      ...(model.portalCount > 0
+        ? [{ id: PORTAL_CLUSTER_NODE_ID, ...portalClusterDimensions() }]
+        : []),
     ];
     const edges: LayoutEdgeInput[] = model.edges.map((e) => ({ id: e.id, from: e.from, to: e.to }));
     return { nodes, edges };
@@ -390,7 +451,7 @@ function GraphCanvasInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [model, expansionSig]);
 
-  const { positions, layouting, error: layoutError } = useLayout(
+  const { positions, routes, layouting, error: layoutError } = useLayout(
     top?.nodeId ?? '',
     layoutInputs.nodes,
     layoutInputs.edges,
@@ -398,7 +459,27 @@ function GraphCanvasInner() {
   );
 
   const [nodes, setNodes] = useState<AppNode[]>([]);
+  /**
+   * Routes are held in state next to `nodes`, not read from `useLayout`
+   * directly: both are published by the one apply effect below, so an edge can
+   * never be drawn along a route computed for node positions that are not yet
+   * on screen.
+   */
+  const [edgeRoutes, setEdgeRoutes] = useState<ReadonlyMap<string, LayoutPoint[]>>(NO_ROUTES);
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
+
+  /**
+   * "The user asked to see more nodes" — either cluster expanded. Both flags
+   * only ever go false -> true, so a change is always a deliberate expansion.
+   *
+   * It has to be told apart from the OTHER same-view rebuild (the throttled
+   * refetch while indexing streams), which must never move a camera the user
+   * has taken. An expansion re-lays-out the whole graph around a much larger
+   * node set: leaving the camera put there is how double-clicking the ghost
+   * ends with the graph off screen entirely.
+   */
+  const revealSig = `${showAll}|${showPortals}`;
+  const lastRevealRef = useRef(revealSig);
 
   // Read the entry via a ref inside effects so saving the viewport (which
   // patches the top entry) doesn't retrigger a rebuild + refit.
@@ -458,15 +539,33 @@ function GraphCanvasInner() {
         data: { count: model.clusterCount, direction },
       });
     }
+    if (model.portalCount > 0) {
+      const dims = portalClusterDimensions();
+      const pos = positions.get(PORTAL_CLUSTER_NODE_ID) ?? { x: 0, y: 0 };
+      flowNodes.push({
+        id: PORTAL_CLUSTER_NODE_ID,
+        type: 'portalCluster',
+        position: { x: pos.x, y: pos.y },
+        width: dims.width,
+        height: dims.height,
+        data: { count: model.portalCount, direction },
+      });
+    }
     setNodes(flowNodes);
+    setEdgeRoutes(routes ?? NO_ROUTES);
     // Same-view rebuilds (throttled index refetch, cluster expand) must not
     // fight the user for the camera — only genuine view changes reset it.
     const viewId = entry?.nodeId ?? null;
     const viewChanged = lastViewIdRef.current !== viewId;
     lastViewIdRef.current = viewId;
-    if (viewChanged) userInteractedRef.current = false;
-    pendingViewportRef.current = { restore: entry?.viewport ?? null, refresh: !viewChanged };
-  }, [model, positions, direction, graph]);
+    const revealChanged = lastRevealRef.current !== revealSig;
+    lastRevealRef.current = revealSig;
+    if (viewChanged || revealChanged) userInteractedRef.current = false;
+    pendingViewportRef.current = {
+      restore: entry?.viewport ?? null,
+      refresh: !viewChanged && !revealChanged,
+    };
+  }, [model, positions, routes, direction, graph, revealSig]);
 
   // Hover neighborhood (adjacency over the displayed edges, portals included).
   const nodeIdSet = useMemo(() => {
@@ -475,6 +574,7 @@ function GraphCanvasInner() {
     for (const n of model.visible) ids.add(n.id);
     for (const p of model.portals) ids.add(p.node.id);
     if (model.clusterCount > 0) ids.add(CLUSTER_NODE_ID);
+    if (model.portalCount > 0) ids.add(PORTAL_CLUSTER_NODE_ID);
     return ids;
   }, [model]);
 
@@ -492,7 +592,16 @@ function GraphCanvasInner() {
     return map;
   }, [model]);
 
-  const hoverActive = hoverId !== null && nodeIdSet.has(hoverId);
+  /**
+   * Dimming exists to show a NEIGHBORHOOD — which of these nodes the hovered
+   * one touches. A node with no drawn links has no neighborhood, so there is
+   * nothing for the dim to reveal: it would darken the entire view to say
+   * "this one connects to nothing", which the card's own "0 in · 0 out" row
+   * already says, in place, without hiding everything else.
+   */
+  const hoverNeighbors = hoverId === null ? undefined : adjacency.get(hoverId);
+  const hoverActive =
+    hoverId !== null && nodeIdSet.has(hoverId) && (hoverNeighbors?.size ?? 0) > 0;
 
   const renderNodes = useMemo<AppNode[]>(() => {
     const neighbors = hoverActive && hoverId !== null ? adjacency.get(hoverId) : undefined;
@@ -523,11 +632,13 @@ function GraphCanvasInner() {
       ]
         .filter(Boolean)
         .join(' ');
+      const points = edgeRoutes.get(edge.id);
       const flowEdge: AppEdge = {
         id: edge.id,
         source: edge.from,
         target: edge.to,
-        type: 'smoothstep',
+        type: 'routed',
+        data: points !== undefined ? { points } : {},
         markerEnd: {
           type: MarkerType.ArrowClosed,
           width: 14,
@@ -549,7 +660,7 @@ function GraphCanvasInner() {
       }
       return flowEdge;
     });
-  }, [model, hoverActive, hoverId, hoveredEdgeId]);
+  }, [model, hoverActive, hoverId, hoveredEdgeId, edgeRoutes]);
 
   // True once the user has panned/zoomed by hand in the current view.
   const userInteractedRef = useRef(false);
@@ -629,6 +740,8 @@ function GraphCanvasInner() {
     (node: AppNode) => {
       if (node.type === 'cluster') {
         setShowAll();
+      } else if (node.type === 'portalCluster') {
+        setShowPortals();
       } else if (node.type === 'portal') {
         // A rolled-up ghost IS the destination (a file/class), so open its own
         // view; a single-symbol ghost lands in its parent's view, centred.
@@ -640,7 +753,7 @@ function GraphCanvasInner() {
         drillInto(node.data.node);
       }
     },
-    [setShowAll, navigateToNode, drillInto],
+    [setShowAll, setShowPortals, navigateToNode, drillInto],
   );
   const activateRef = useRef(activateNode);
   activateRef.current = activateNode;
@@ -701,6 +814,7 @@ function GraphCanvasInner() {
         nodes={renderNodes}
         edges={renderEdges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
         onNodeClick={(_event, node) => select(node.id)}
         onNodeDoubleClick={(_event, node) => activateNode(node)}
@@ -723,7 +837,11 @@ function GraphCanvasInner() {
       >
         <Background gap={24} />
       </ReactFlow>
-      {graphLoading || layouting ? (
+      {/* "Laying out…" explains an EMPTY canvas. Once cards are on screen
+          there is nothing left to explain, and showing it anyway made the
+          throttled refetch during indexing pulse a spinner over a perfectly
+          readable graph every couple of seconds. */}
+      {graphLoading || (layouting && nodes.length === 0) ? (
         <div className="canvas-overlay">
           <span className="spinner" aria-hidden />
           <span>{graphLoading ? 'Loading view…' : 'Laying out…'}</span>

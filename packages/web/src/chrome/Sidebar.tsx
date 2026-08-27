@@ -17,7 +17,7 @@
 
 import { useCallback, useEffect, useRef } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
-import { CLUSTER_NODE_ID } from '../canvas/types';
+import { isSyntheticNodeId } from '../canvas/types';
 import type { SidebarTab } from '../state/store';
 import { selectTopEntry, useAppStore } from '../state/store';
 import { DetailsPane } from './DetailsPane';
@@ -102,10 +102,11 @@ export function Sidebar() {
   const storedTab = useAppStore((s) => s.sidebarTab);
   const resize = useSidebarResize();
 
-  // The "+N more" cluster is a selection with no node behind it, so it gets no
-  // details tab. Deriving that here (rather than special-casing it inside
-  // select()) keeps the store from having to know about canvas internals.
-  const detailsId = selectionId !== null && selectionId !== CLUSTER_NODE_ID ? selectionId : null;
+  // The "+N more" cluster and the collapsed ghost are selections with no node
+  // behind them, so they get no details tab. Deriving that here (rather than
+  // special-casing it inside select()) keeps the store from having to know
+  // about canvas internals.
+  const detailsId = selectionId !== null && !isSyntheticNodeId(selectionId) ? selectionId : null;
   const tab: SidebarTab = detailsId === null ? 'files' : storedTab;
 
   return (

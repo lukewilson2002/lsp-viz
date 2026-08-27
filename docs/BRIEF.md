@@ -126,7 +126,9 @@ resume from last completed file. Log indexing stats (files, symbols, edges, dura
   resolved during indexing) are clickable links that navigate to that symbol's view.
 * Portal nodes at L4: calls to symbols outside the current file render as small ghost nodes
   labeled with their file. Double-clicking a portal jumps to that file's L4 view with the
-  target symbol selected and centered.
+  target symbol selected and centered. Ghosts are context, not content: when there are too
+  many to be worth drawing they collapse into a single "N external symbols" node that
+  expands on double-click, so a heavily-used file's view stays about the file.
 * Search (Cmd/Ctrl-K): fuzzy palette over all symbols; selecting one jumps to its view at
   the right level and pushes the full ancestor chain onto the breadcrumb.
 

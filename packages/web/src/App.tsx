@@ -6,6 +6,7 @@ import { Legend } from './chrome/Legend';
 import { Sidebar } from './chrome/Sidebar';
 import { SearchPalette } from './chrome/SearchPalette';
 import { StatusBar } from './chrome/StatusBar';
+import { ViewKind } from './chrome/ViewKind';
 import { useGlobalKeys } from './keys';
 import { selectTopEntry, useAppStore } from './state/store';
 import { FunctionView } from './views/FunctionView';
@@ -56,6 +57,7 @@ export function App() {
         <div className={`view-anim${isL5 ? '' : ' view-anim--canvas'}`} key={top.nodeId}>
           {isL5 ? <FunctionView /> : <GraphCanvas />}
         </div>
+        {!isL5 ? <ViewKind /> : null}
         {!isL5 ? <Legend /> : null}
         {!isL5 ? <Sidebar /> : null}
       </main>

@@ -20,6 +20,20 @@ import { APP_ORIGIN, registerAppScheme, serveApp } from './protocol.js';
 import { RepoSession } from './session.js';
 import { forgetRepo, recentRepos } from './state.js';
 
+/**
+ * The app is called lsp-viz, not "@lsp-viz/desktop" and not "Electron".
+ *
+ * Three separate things read a name and only one of them is the window title.
+ * `productName` in package.json / electron-builder.yml names the PACKAGED
+ * bundle; this call names the RUNNING app, which is what `app.name` — and so
+ * the macOS app menu, the About panel and `app.getPath('userData')` — reads.
+ * It has to happen before `whenReady`, because the menu and the paths are
+ * resolved from it once. (In a dev run the bold menu-bar title still comes
+ * from the Electron.app bundle's Info.plist, which no runtime call can move;
+ * a packaged build shows lsp-viz there too.)
+ */
+app.setName('lsp-viz');
+
 // Must happen before the app is ready — a privileged scheme cannot be
 // registered once the first window exists.
 registerAppScheme();

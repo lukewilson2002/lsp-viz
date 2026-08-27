@@ -123,6 +123,76 @@ export function extractSignature(hover: Hover | null): string | undefined {
   return cleaned.length > SIGNATURE_MAX_LENGTH ? cleaned.slice(0, SIGNATURE_MAX_LENGTH) : cleaned;
 }
 
+/** Text between two positions, or null if either falls outside `lines`. */
+function sliceBetween(lines: readonly string[], start: Position, end: Position): string | null {
+  if (start.line > end.line || start.line >= lines.length || end.line >= lines.length) return null;
+  if (start.line === end.line) {
+    const line = lines[start.line] as string;
+    return start.character <= end.character ? line.slice(start.character, end.character) : null;
+  }
+  const parts = [(lines[start.line] as string).slice(start.character)];
+  for (let i = start.line + 1; i < end.line; i += 1) parts.push(lines[i] as string);
+  parts.push((lines[end.line] as string).slice(0, end.character));
+  return parts.join('\n');
+}
+
+/**
+ * Put back the modifier keywords the hover dropped.
+ *
+ * A hover describes a symbol's TYPE, so tsserver answers `export async
+ * function f()` with plain `function f()`. Those two words are not
+ * decoration — whether a declaration is exported and whether it is async are
+ * among the first things a reader wants from it, and the Source view sitting
+ * directly beneath the signature in the UI shows them, so a signature without
+ * them reads as a contradiction.
+ *
+ * They are READ BACK from the source rather than inferred: a symbol's `range`
+ * starts at its declaration and its `selectionRange` starts at its name, so
+ * the text between the two is exactly the modifier prefix. Only a LEADING run
+ * of known keywords is taken and only when it accounts for the whole gap
+ * (bar the declaration keyword itself), so anything unexpected in there — a
+ * decorator, a comment — yields nothing rather than a wrong guess.
+ *
+ * The result is prefixed to the hover text, except on a hover that opens with
+ * a `(method)`-style annotation, where it goes after it: the annotation is a
+ * label for the whole entry, and a modifier belongs to the declaration.
+ */
+export function withSourceModifiers(
+  signature: string,
+  node: GraphNode,
+  lines: readonly string[],
+  modifiers: readonly string[],
+): string {
+  const range = node.range;
+  const sel = node.selectionRange;
+  if (!range || !sel || modifiers.length === 0) return signature;
+
+  const gap = sliceBetween(lines, range.start, sel.start);
+  if (gap === null || gap.trim() === '') return signature;
+
+  const words = gap.trim().split(/\s+/);
+  const found: string[] = [];
+  for (const word of words) {
+    if (!modifiers.includes(word)) break;
+    found.push(word);
+  }
+  if (found.length === 0) return signature;
+
+  // Whatever follows the modifiers must be the declaration keyword and
+  // nothing else ("export async function " → "function"). More than that and
+  // this is not a shape we understand, so we leave the hover as it came.
+  if (words.length - found.length > 1) return signature;
+
+  // Do not restate what the hover already says (`(property) readonly x`).
+  const missing = found.filter((word) => !new RegExp(`\\b${word}\\b`).test(signature));
+  if (missing.length === 0) return signature;
+
+  const annotation = /^\((?:[a-z ]+)\)\s+/.exec(signature);
+  if (annotation === null) return `${missing.join(' ')} ${signature}`;
+  const head = annotation[0];
+  return `${head}${missing.join(' ')} ${signature.slice(head.length)}`;
+}
+
 function lineSpan(range: Range): number {
   return range.end.line - range.start.line + 1;
 }
@@ -426,6 +496,10 @@ export async function runSemanticPhase(
     const absPath = path.join(repoRoot, file);
     const text = readFileSync(absPath, 'utf8');
     await client.openDocument(file, text);
+    // Split lazily and once: only the hover path needs it, and a file with no
+    // hoverable symbol should not pay to split it at all.
+    let lines: readonly string[] | null = null;
+    const textLines = (): readonly string[] => (lines ??= text.split('\n'));
     try {
       let response = await client.documentSymbols(file);
       if (!warmedUp) {
@@ -507,7 +581,14 @@ export async function runSemanticPhase(
         if (entry.needsHover) {
           const hover = await guarded(() => client.hover(file, sel.start));
           const signature = extractSignature(hover);
-          if (signature !== undefined) entry.node.signature = signature;
+          if (signature !== undefined) {
+            entry.node.signature = withSourceModifiers(
+              signature,
+              entry.node,
+              textLines(),
+              adapter.declarationModifiers ?? [],
+            );
+          }
         }
         if (!entry.needsCalls) return;
         const items = await guarded(() => client.prepareCallHierarchy(file, sel.start));

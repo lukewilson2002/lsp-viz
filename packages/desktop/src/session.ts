@@ -19,6 +19,11 @@ import type { ApiReply, WorkerMessage, WorkerRequest } from './worker-protocol.j
 
 const sessions = new Map<number, RepoSession>();
 
+/** App first, repo second — the window is one repo's view OF lsp-viz. */
+function windowTitle(repoRoot: string): string {
+  return `lsp-viz — ${path.basename(repoRoot)}`;
+}
+
 export class RepoSession {
   readonly window: BrowserWindow;
   readonly repoRoot: string;
@@ -46,7 +51,7 @@ export class RepoSession {
       height: 900,
       minWidth: 900,
       minHeight: 600,
-      title: path.basename(repoRoot),
+      title: windowTitle(repoRoot),
       backgroundColor: '#11131a',
       // The canvas is the app; a chromeless top strip on macOS gives it the
       // whole window without the frontend needing to know it's in Electron.
@@ -64,6 +69,15 @@ export class RepoSession {
     });
 
     this.contentsId = this.window.webContents.id;
+
+    // The `title` option above only holds until the page loads: a document's
+    // <title> overwrites the window title, and the frontend's is a bare
+    // "lsp-viz" that would drop the repo name (and be identical across every
+    // open window). The window title belongs to the shell, not the page.
+    this.window.webContents.on('page-title-updated', (event) => {
+      event.preventDefault();
+      if (!this.window.isDestroyed()) this.window.setTitle(windowTitle(repoRoot));
+    });
 
     this.worker = utilityProcess.fork(workerScript(), ['--repo', repoRoot], {
       stdio: 'inherit',

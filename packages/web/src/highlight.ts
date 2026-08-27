@@ -79,6 +79,27 @@ export function usePrefersLight(): boolean {
   return light;
 }
 
+/** The one call into Shiki; every hook below goes through it. */
+function toHtml(highlighter: Highlighter, text: string, lang: HighlightLang, light: boolean): string {
+  return highlighter.codeToHtml(text, {
+    lang,
+    theme: light ? 'github-light' : 'github-dark',
+    // Tells identifier linking where the code ISN'T: without it a data
+    // label `'mean'` and every JSDoc mention of a symbol become links.
+    includeExplanation: 'scopeName',
+    transformers: [
+      {
+        name: 'lsp-viz:mark-prose',
+        span(hast, _line, _col, _lineElement, token) {
+          const scopes = token.explanation?.[0]?.scopes ?? [];
+          const innermost = scopes[scopes.length - 1]?.scopeName ?? '';
+          if (SKIP_SCOPE.test(innermost)) hast.properties[SKIP_ATTR] = 'skip';
+        },
+      },
+    ],
+  });
+}
+
 /**
  * Highlight `text` into Shiki HTML for the current color scheme.
  * Returns null while the highlighter chunk is still loading (callers render a
@@ -95,25 +116,7 @@ export function useHighlightedHtml(text: string | null, lang: HighlightLang | nu
     getHighlighter()
       .then((highlighter) => {
         if (cancelled) return;
-        setHtml(
-          highlighter.codeToHtml(text, {
-            lang,
-            theme: light ? 'github-light' : 'github-dark',
-            // Tells identifier linking where the code ISN'T: without it a data
-            // label `'mean'` and every JSDoc mention of a symbol become links.
-            includeExplanation: 'scopeName',
-            transformers: [
-              {
-                name: 'lsp-viz:mark-prose',
-                span(hast, _line, _col, _lineElement, token) {
-                  const scopes = token.explanation?.[0]?.scopes ?? [];
-                  const innermost = scopes[scopes.length - 1]?.scopeName ?? '';
-                  if (SKIP_SCOPE.test(innermost)) hast.properties[SKIP_ATTR] = 'skip';
-                },
-              },
-            ],
-          }),
-        );
+        setHtml(toHtml(highlighter, text, lang, light));
       })
       .catch(() => {
         // Highlighter failed to load — the plain fallback stays up.
@@ -122,6 +125,61 @@ export function useHighlightedHtml(text: string | null, lang: HighlightLang | nu
       cancelled = true;
     };
   }, [text, lang, light]);
+
+  return html;
+}
+
+/**
+ * The same, memoized across component lifetimes — for the SHORT snippets that
+ * are rendered many at a time and remount constantly: a canvas view holds
+ * dozens of signature blocks and React Flow rebuilds every card on each
+ * layout. Without the cache each rebuild re-tokenizes every signature and
+ * flashes the plain fallback on the way back; with it a cached snippet is
+ * returned on the very first render, before any effect runs.
+ *
+ * Bounded and dropped wholesale when full: entries are cheap and short-lived,
+ * and an LRU's bookkeeping would cost more than the re-highlight it saves.
+ */
+const snippetCache = new Map<string, string>();
+const SNIPPET_CACHE_MAX = 600;
+
+function snippetKey(text: string, lang: HighlightLang, light: boolean): string {
+  return `${light ? 'l' : 'd'}|${lang}|${text}`;
+}
+
+export function useHighlightedCode(text: string, lang: HighlightLang | null): string | null {
+  const light = usePrefersLight();
+  const key = lang === null ? null : snippetKey(text, lang, light);
+  const [html, setHtml] = useState<string | null>(() =>
+    key === null ? null : (snippetCache.get(key) ?? null),
+  );
+
+  useEffect(() => {
+    if (key === null || lang === null) {
+      setHtml(null);
+      return;
+    }
+    const cached = snippetCache.get(key);
+    if (cached !== undefined) {
+      setHtml(cached);
+      return;
+    }
+    setHtml(null);
+    let cancelled = false;
+    getHighlighter()
+      .then((highlighter) => {
+        const rendered = toHtml(highlighter, text, lang, light);
+        if (snippetCache.size >= SNIPPET_CACHE_MAX) snippetCache.clear();
+        snippetCache.set(key, rendered);
+        if (!cancelled) setHtml(rendered);
+      })
+      .catch(() => {
+        // Highlighter failed to load — the plain fallback stays up.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [key, text, lang, light]);
 
   return html;
 }

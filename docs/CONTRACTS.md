@@ -337,7 +337,9 @@ window's drag region.
 Follow BRIEF.md's frontend section fully. Binding specifics:
 
 * Nav stack entries: `{ nodeId, name, kind, level, viewport: {x,y,zoom} | null,
-  selectionId: string | null, showAll: boolean }`. Level via `levelForViewParent`.
+  selectionId: string | null, showAll: boolean, showPortals: boolean }`. Level via
+  `levelForViewParent`. The two `show*` flags are separate LOD overrides — children and
+  ghosts answer different questions, so expanding one must not expand the other.
   Drill-in pushes (after saving the current viewport into the current entry); Back pops
   and restores the exact viewport; breadcrumb click pops to that depth; browser
   history.pushState/popstate mirror the stack depth; Backspace = Back (never while an
@@ -347,11 +349,19 @@ Follow BRIEF.md's frontend section fully. Binding specifics:
   invalidate the cache and refetch the current view on `index:done` and (throttled,
   ~2 s) while `index:progress` streams. L5 uses `/api/node/:id` + `/api/source/:id`.
 * Portals (file/class views): render `externalNodes` as small ghost nodes (dashed
-  border, `basename:line` location label via `cardModel.formatCardPath`) wired by
+  border, `basename:line-line` location label via `cardModel.formatCardPath`) wired by
   `externalEdges` — deliberately kept a two-row ghost while real cards grew a full row
   stack, since a portal is a POINTER to a declaration elsewhere; double-click →
   `navigateToNode(portalTargetId)` landing on the target's PARENT view with the target
-  selected and centered. `navigateToNode` (also used by search + sidebar links)
+  selected and centered.
+* Ghosts give way before content, in two steps. `rollUpPortals` merges the ones sharing
+  a parent declaration; past `PORTAL_MAX_VISIBLE` the REST collapse wholesale into one
+  `portalCluster` node reading "N external symbols" (N counts symbols, so a roll-up
+  ghost contributes its whole group), with every edge re-targeted onto it and
+  double-click → `setShowPortals()`. Both steps exist because ghosts and cards share
+  one `LOD_MAX_VISIBLE` budget: a file with forty external callers otherwise spends its
+  entire budget on its surroundings and pushes its OWN declarations into "+N more".
+  The node a navigation landed on is never collapsed — the canvas has to centre it. `navigateToNode` (also used by search + sidebar links)
   fetches `/api/node/:id`, rebuilds the stack from `ancestors`, and lands: leaf symbol →
   L5; container/file/class → its own view.
 * Search palette on Cmd/Ctrl-K: debounced `/api/search`, kind icon + name + dimmed path,
@@ -359,7 +369,18 @@ Follow BRIEF.md's frontend section fully. Binding specifics:
 * ELK layout in a Web Worker (`new Worker(new URL('./elk.worker.ts', import.meta.url),
   { type: 'module' })`, import `elkjs/lib/elk.bundled.js` inside the worker —
   never on the main thread). `elk.algorithm: 'layered'`; direction DOWN for levels 1–3,
-  RIGHT for 4. React Flow edges: smoothstep with arrow markers.
+  RIGHT for 4.
+* Edges render ELK's own routes. `elk.edgeRouting: 'ORTHOGONAL'` already computes an
+  obstacle-avoiding polyline per edge — that is what `elk.spacing.edgeNode` reserves the
+  channels for — so the worker returns `edges[].sections` as `LayoutResponse.routes`
+  (`LayoutRoute { id, points }`, same coordinate space as `positions`), and the single
+  `routed` React Flow edge type draws it with 5px rounded corners. Endpoints are snapped
+  to the handles React Flow rendered; ELK's interior bends are kept verbatim.
+  `elk.layered.mergeEdges` stays on — merged edges leave from a node's border CENTRE,
+  which is exactly where `NodeHandles` puts its one handle per side, so the snap is
+  normally a no-op. An edge with no usable route (ELK failed, or no sections came back)
+  falls back to `getSmoothStepPath`, so no edge is ever left undrawn. Arrow markers
+  unchanged. Reading the routes back is free: they were computed and discarded before.
 * Visual encoding per BRIEF (kind → icon/shape, edge width from `count` (log scale),
   solid calls / dashed imports / dotted references, entry badge from `attrs.entry`,
   file cards show `exportCount` + top `exportedNames`). A PORTAL edge is ghosted by its
@@ -373,23 +394,46 @@ Follow BRIEF.md's frontend section fully. Binding specifics:
   rule (`attrs.symbolCount`/`loc`, clamped) applies to card WIDTH only — height is
   derived from the rows the card actually renders, since scaling a content-derived
   height would clip it. Muted dark palette (CSS variables), accent only for selection,
-  search hits, hover neighborhood. Hover dims non-neighbors (~0.25 opacity, 150ms).
+  search hits, hover neighborhood. Hover dims non-neighbors (~0.25 opacity, 150ms) —
+  but ONLY when the hovered node has neighbors to reveal. Dimming answers "which of
+  these does it touch"; on an unconnected node there is no answer, so it would darken
+  the whole view to restate the card's own "0 in · 0 out" row while hiding everything
+  else.
   Legend (collapsible, bottom-left). View transitions ~200ms (fade/scale on canvas +
   fitView duration).
-* Level-of-detail: > 50 children → keep the ~49 largest, cluster the rest into one
-  "+N more" node; double-click expands (`showAll`).
+* Level-of-detail: > 50 RENDERED NODES (ghosts included) → keep the largest children,
+  cluster the rest into one "+N more" node; double-click expands (`showAll`). Ghosts are
+  collapsed first, so the budget is spent on the view's own contents (see Portals).
+  Either expansion re-fits the camera even when the user has panned — a same-view
+  rebuild normally must NOT move a camera the user has taken, but an expansion
+  re-lays-out the graph around a much larger node set and leaving the camera put is how
+  a double-click ends with the graph off screen.
+* Card height estimates (`canvas/types.ts`) must round UP against what the browser will
+  do; `.node-card` is `overflow: hidden` at a height it does not control, and the flex
+  column absorbs any shortfall out of the one shrinkable row (the signature), which
+  reads as a clipped last line on a card that otherwise measures correctly. Two things
+  that costs in practice: the card's own 1px border counts (`box-sizing: border-box` is
+  global, so React Flow's height INCLUDES it), and wrapped text does not pack to the
+  right edge — `length / charsPerLine` under-counts real word wrapping, so
+  `wrappedLineCount` walks the words the way the browser does.
 * Sidebar (right panel, ALWAYS visible on canvas views; width `--sidebar-width`,
   ~440px, drag-to-resize on its left edge, double-click resets). TWO TABS, both panes
   kept mounted so switching never drops tree expansion, scroll position or a Shiki
   render:
   * **Files** — always present. The containment tree from `GET /api/tree` (cached in
-    the store, refetched on `index:done`); every row navigates via `navigateToNode`.
+    the store, refetched on `index:done`); every row navigates via `navigateToNode`,
+    EXCEPT a directory row that is already the current view or the selection — there,
+    navigating again would push a duplicate history entry and change nothing on
+    screen, so the click toggles the row open/closed instead.
     Two distinct marks: the CURRENT VIEW row is quiet (elevated background + left
     rail), the SELECTION row is accent-tinted. A selection with no tree row of its own
     (a symbol, a class L4 view, a portal target) anchors to its nearest tree-present
     ancestor via `chrome/treeAnchor.ts`, which flags the row as a PROXY and hangs a
     chip naming the real target on it — so `index.ts` never merely looks selected when
     a function inside it is. Both anchor chains auto-expand; never auto-collapse.
+    The disclosure control is drawn (`DisclosureChevron`), not a character: U+25B8 /
+    U+25BE are Unicode's SMALL triangles and stay a speck at any font-size a 25px row
+    can afford. One shape, rotated for the open state.
   * **Details** — exists only while something is selected (portals included; the
     "+N more" cluster is excluded, derived in `Sidebar.tsx` so the store never has to
     know about canvas internals). Labelled with the selected node's own name and
@@ -415,8 +459,11 @@ Follow BRIEF.md's frontend section fully. Binding specifics:
 * Node cards: metadata lives IN the graph, not behind an interaction. There is NO hover
   popover and NO details toggle — every card (container/file/symbol; not portals or the
   cluster) renders its full row stack unconditionally: glyph + name (wrapping to 2
-  lines) + `entry` pill, signature (symbols, clamped to 2 lines), display path, a facts
-  line (kind · `symbolCount` items / `loc` / `exportCount`), top `exportedNames`
+  lines) + `entry` pill, signature (symbols; real highlighted, clickable code via
+  `CodeSignature`, clamped to `SIG_MAX_LINES`), display path (`basename:start-end` for
+  symbols), a facts line for containers and files only (kind · `symbolCount` items /
+  `loc` / `exportCount` — symbols have none, since the glyph carries the kind and the
+  path row's line range carries the `loc`), top `exportedNames`
   (files), and last a LINKS ROW reading "N in · M out" from
   `GraphViewResponse.linkCounts` — the NODE's own links, never a count of the arrows
   this view happens to draw (a view merges parallel edges, re-attributes a descendant's
@@ -438,13 +485,23 @@ Follow BRIEF.md's frontend section fully. Binding specifics:
 * Zoom level-of-detail is two-tier and opacity-only (heights are ELK-fixed): below
   ≈0.34 the secondary rows fade out, below ≈0.2 the glyph and name go too.
 * L5 function view: "Used by" column | full source (Shiki, real line numbers) | "Uses"
-  column; signature header; every row navigates. NOT "Callers"/"Callees": both lists
+  column; signature header; every row navigates. The three columns are a grid of
+  `minmax(0, …fr)` tracks separated by two drag handles, defaulting to near-equal thirds
+  with a nudge to the source column and persisted per browser (`views/columnWidths.ts`).
+  `minmax(0, …)` is load-bearing, not cosmetic: a grid track's automatic minimum is its
+  min-content width, so one long symbol name in a link column used to set a floor that
+  squeezed the source column — the thing the page exists to show — down to a scrollbar.
+  For the same reason `.call-path` is `flex: 1 1 0` and takes NO part in the row's
+  overflow: the path gives way entirely before a symbol name loses one character.
+  NOT "Callers"/"Callees": both lists
   carry every symbol-level edge kind, and this view is reached by variables and types
   too — a constant is REFERENCED by the function whose default parameter reads it, and
   that is the node most likely to be looked at here. `chrome/CallList.tsx` renders both
   columns and the sidebar's INCOMING/OUTGOING, so its `empty` strings are written in
   the same link-neutral language.
-* Clickable identifiers in a source view (BOTH surfaces): the candidate list comes from
+* Clickable identifiers in code (EVERY surface — the two source views and the three
+  signature blocks): one pass, `code/linkify.ts`, over each surface's own detached DOM;
+  the candidate list comes from
   `GET /api/links/:id` through the one hook `code/useCodeLinks.ts` — never rebuilt from
   `detail.outgoing` per surface, which is how a FILE node ended up offering only
   basenames like `index.ts` and no file source view ever had a single link. The client
@@ -461,6 +518,15 @@ Follow BRIEF.md's frontend section fully. Binding specifics:
   the preceding two characters are carried ACROSS text nodes because Shiki puts the `.`
   in a token span of its own (two characters, not one, so `...NODES` still links).
   The pass runs on a detached `DOMParser` document, never on live nodes React owns.
+* Signature blocks (`code/CodeSignature.tsx`) are code, not captions: Shiki-highlighted
+  and linkified by the same two modules as a source view, on node cards, in the sidebar
+  Details tab and in the L5 header. Highlighting is best-effort — until the Shiki chunk
+  loads, and forever for a language with no grammar, the plain text renders WITH its
+  links, because linking is a graph fact and does not depend on a grammar. A card
+  fetches its `/api/links/:id` on FIRST HOVER, not with the view: a view holds dozens of
+  cards, hovering one is the move that precedes clicking inside it, and the store
+  de-dupes and caches the answer. Snippets are memoized across component lifetimes
+  (`useHighlightedCode`) because React Flow rebuilds every card on each layout.
 * Status bar: WS indexing progress (phase, files x/y, current file, symbol/edge counts),
   final stats when idle, and a Re-index button (POST `/api/index` `{full:false}`).
 * Keyboard: arrows move selection to the spatially nearest node in that direction,

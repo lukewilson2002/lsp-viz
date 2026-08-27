@@ -7,6 +7,7 @@
  */
 
 import type { ReactNode } from 'react';
+import { DisclosureChevron } from '../canvas/glyphs';
 import type { DetailSectionId } from '../state/store';
 import { useAppStore } from '../state/store';
 
@@ -37,8 +38,13 @@ export function DetailSection({
         aria-controls={bodyId}
         onClick={() => toggleDetailSection(id)}
       >
-        <span className="detail-section-chevron" aria-hidden>
-          {collapsed ? '▸' : '▾'}
+        {/* Same control, same shape as the file tree's — they sit one tab
+            apart in the same panel. */}
+        <span
+          className={`tree-chevron detail-section-chevron${collapsed ? '' : ' tree-chevron--open'}`}
+          aria-hidden
+        >
+          <DisclosureChevron />
         </span>
         <span>{label}</span>
         {count !== undefined ? <span className="detail-section-count">{count}</span> : null}

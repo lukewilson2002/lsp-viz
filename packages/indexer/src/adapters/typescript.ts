@@ -182,6 +182,26 @@ export const typescriptAdapter: LanguageAdapter = {
     return { command: process.execPath, args: [LSP_CLI, '--stdio'] };
   },
 
+  /**
+   * Ordered as TypeScript requires them to be written, which is also the
+   * order they are re-emitted in — `export default async`, never
+   * `async export`. `declare`/`abstract` appear on declarations that have no
+   * body, where the hover is all the reader gets.
+   */
+  declarationModifiers: [
+    'export',
+    'default',
+    'declare',
+    'abstract',
+    'public',
+    'private',
+    'protected',
+    'static',
+    'readonly',
+    'override',
+    'async',
+  ],
+
   mapSymbolKind(lspSymbolKind: number): NodeKind | null {
     switch (lspSymbolKind) {
       case 5: // Class

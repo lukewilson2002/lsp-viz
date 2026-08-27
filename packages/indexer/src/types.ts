@@ -57,6 +57,15 @@ export interface LanguageAdapter {
   lspCommand(repoRoot: string): { command: string; args: readonly string[] };
   /** Map an LSP SymbolKind number to an IR NodeKind; null = skip the symbol. */
   mapSymbolKind(lspSymbolKind: number): NodeKind | null;
+  /**
+   * Declaration modifier keywords, for putting back what hover drops.
+   *
+   * A hover describes a symbol's TYPE, not the line that declares it, so
+   * tsserver answers `export async function f()` with `function f()`. These
+   * are the words the semantic pass is allowed to recover from the source
+   * text ahead of the symbol's name; anything not listed here is left alone.
+   */
+  declarationModifiers?: readonly string[];
 }
 
 export type IndexProgressEvent =

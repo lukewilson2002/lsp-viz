@@ -62,6 +62,13 @@ export interface ViewEntry {
   selectionId: string | null;
   /** LOD override: render all children even past the visible-node cap. */
   showAll: boolean;
+  /**
+   * Ghost override: render every external symbol as its own ghost, even past
+   * the portal cap. Separate from `showAll` because they answer different
+   * questions — "show me the rest of this file" and "show me what's outside
+   * it" — and expanding one must not drag in the other.
+   */
+  showPortals: boolean;
 }
 
 /** Data slot for an L5 (leaf symbol) view. */
@@ -189,6 +196,8 @@ export interface AppState {
   saveViewport: (viewport: Viewport) => void;
   /** Expand the "+N more" cluster: show every child, then re-fit. */
   setShowAll: () => void;
+  /** Expand the collapsed ghost: show every external symbol, then re-fit. */
+  setShowPortals: () => void;
   setPaletteOpen: (open: boolean) => void;
   clearPendingCenter: () => void;
   /** Fetch-and-cache one node's detail; null on failure. In-flight deduped. */
@@ -220,6 +229,7 @@ function makeEntry(node: Pick<GraphNode, 'id' | 'name' | 'kind'>): ViewEntry {
     viewport: null,
     selectionId: null,
     showAll: false,
+    showPortals: false,
   };
 }
 
@@ -279,7 +289,7 @@ export const useAppStore = create<AppState>()((set, get) => {
   let treeFetching = false;
 
   /**
-   * Last-known ViewEntry per node id: restores viewport/selection/showAll
+   * Last-known ViewEntry per node id: restores viewport/selection/show flags
    * when a node's view re-enters the stack via Back/Forward after a rebuild.
    */
   const entryCache = new Map<string, ViewEntry>();
@@ -452,6 +462,7 @@ export const useAppStore = create<AppState>()((set, get) => {
           viewport: null,
           selectionId: null,
           showAll: false,
+          showPortals: false,
         };
         set({ meta, bootState: 'ready', stack: [rootEntry] });
         const state: HistoryState = { lspVizStack: snapshotOf([rootEntry]) };
@@ -561,6 +572,10 @@ export const useAppStore = create<AppState>()((set, get) => {
       // Clearing the saved viewport makes the canvas re-fit around the
       // expanded node set instead of restoring the pre-expansion camera.
       patchTop({ showAll: true, viewport: null });
+    },
+
+    setShowPortals: () => {
+      patchTop({ showPortals: true, viewport: null });
     },
 
     setPaletteOpen: (open) => {

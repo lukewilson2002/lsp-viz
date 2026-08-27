@@ -11,12 +11,41 @@
  */
 
 import type { GraphNode, LinkCounts } from '@lsp-viz/core';
+import { CodeSignature } from '../../code/CodeSignature';
 import type { LayoutDirection } from '../../layout/messages';
+import { useAppStore } from '../../state/store';
 import type { CardVariant } from '../cardModel';
 import { cardRows } from '../cardModel';
 import { kindGlyph } from '../glyphs';
 import { NodeHandles } from './NodeHandles';
 import { IOPanel, LinksRow, useNodeIO } from './NodeIO';
+
+/**
+ * The card's signature block: highlighted, and clickable through to the types
+ * it names.
+ *
+ * Its link set is fetched ON FIRST HOVER rather than with the view. A view
+ * holds dozens of cards and every one of them would otherwise cost a
+ * `/api/links` call on arrival, to answer a question nobody asked — while
+ * hovering a card is exactly the move that precedes clicking inside it, and
+ * the store caches and de-dupes the answer from then on.
+ */
+function CardSignature({ node, signature }: { node: GraphNode; signature: string }) {
+  const links = useAppStore((s) => s.sourceLinks[node.id]?.links ?? null);
+  const ensureSourceLinks = useAppStore((s) => s.ensureSourceLinks);
+  return (
+    <CodeSignature
+      className="node-card-signature nodrag"
+      signature={signature}
+      language={node.language}
+      path={node.path}
+      links={links ?? undefined}
+      onMouseEnter={() => {
+        if (links === null) void ensureSourceLinks(node.id);
+      }}
+    />
+  );
+}
 
 export function NodeCard({
   variant,
@@ -54,16 +83,14 @@ export function NodeCard({
         {rows.entry ? <span className="entry-badge">entry</span> : null}
       </div>
       {rows.signature !== null ? (
-        <div className="node-card-signature" title={rows.signature}>
-          {rows.signature}
-        </div>
+        <CardSignature node={node} signature={rows.signature} />
       ) : null}
       {rows.path !== null ? (
         <div className="node-card-path" title={node.path}>
           {rows.path}
         </div>
       ) : null}
-      <div className="node-card-facts">{rows.facts}</div>
+      {rows.facts !== null ? <div className="node-card-facts">{rows.facts}</div> : null}
       {rows.exports !== null ? <div className="node-card-exports">{rows.exports}</div> : null}
       <LinksRow node={node} links={links} expanded={expanded} />
       {expanded ? <IOPanel node={node} detail={detail} /> : null}

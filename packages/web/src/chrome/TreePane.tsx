@@ -13,7 +13,7 @@
 
 import type { GraphNode, TreeNode } from '@lsp-viz/core';
 import { useEffect, useRef, useState } from 'react';
-import { kindGlyph } from '../canvas/glyphs';
+import { DisclosureChevron, kindGlyph } from '../canvas/glyphs';
 import { useAppStore } from '../state/store';
 import { useTreeAnchor } from './treeAnchor';
 
@@ -142,12 +142,22 @@ function TreeRow(props: TreeRowProps) {
         ref={rowRef}
         className={className}
         style={{ paddingLeft: depth * 14 + 6 }}
-        onClick={() => void navigateToNode(node.id)}
+        onClick={() => {
+          // On the row you are already on, navigating again would push a
+          // duplicate history entry and change nothing on screen. The useful
+          // meaning of a click THERE is open/close — so a directory you are
+          // already looking at toggles instead.
+          if (isDir && (isCurrent || isSelected)) {
+            onToggle(node.id);
+            return;
+          }
+          void navigateToNode(node.id);
+        }}
         title={node.path === '' ? node.name : node.path}
       >
         {isDir ? (
           <span
-            className="tree-chevron"
+            className={`tree-chevron${open ? ' tree-chevron--open' : ''}`}
             role="button"
             aria-label={open ? 'Collapse' : 'Expand'}
             onClick={(event) => {
@@ -155,7 +165,7 @@ function TreeRow(props: TreeRowProps) {
               onToggle(node.id);
             }}
           >
-            {open ? '▾' : '▸'}
+            <DisclosureChevron />
           </span>
         ) : (
           <span className="tree-chevron tree-chevron--leaf" aria-hidden />
