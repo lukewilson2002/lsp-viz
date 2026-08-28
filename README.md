@@ -47,11 +47,9 @@ lsp-viz <path-to-repo> [--port 4977] [--no-open] [--db <path>] [--reindex]
 
 ## Development
 
-A lot of the development has been done with agents -- primarily Claude Code. I just would
-not have been able to make this without them, as it would have been too time consuming.
-With upfront planning and design, we can lead agents to create really awesome things.
-Feel free to open a PR if you think anything could be improved. But if you plan on making
-a lot of changes, then consider reading the section on Contributing, below.
+Much of this project was built with coding agents -- primarily Claude Code. Feel free to
+open a PR if you think anything could be improved. But if you plan on making a lot of
+changes, then consider reading the section on Contributing, below.
 
 ### Common Commands
 
